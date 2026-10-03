@@ -637,15 +637,19 @@ class TunCore(
             if (n < 0) break
             if (n == 0) continue
             val data = buf.copyOfRange(0, n)
-            synchronized(conn.lock) {
-                if (conn.closed || conn.state != 2) continue
-                val seg = buildTcp(id.dstPort, id.srcPort, conn.sndNxt, conn.rcvNxt,
-                    TcpFlag.ACK, 65535, data, dst, src, v6)
-                conn.sndNxt = (conn.sndNxt + data.size) and 0xFFFFFFFFL
-                conn.unackedSince = System.currentTimeMillis()
-                conn.lastUnacked = wrap(v6, dst, src, IpProto.TCP, seg)
-                writeTun(conn.lastUnacked!!)
-            }
+            val seg = synchronized(conn.lock) {
+                if (conn.closed || conn.state != 2) {
+                    null
+                } else {
+                    val s = buildTcp(id.dstPort, id.srcPort, conn.sndNxt, conn.rcvNxt,
+                        TcpFlag.ACK, 65535, data, dst, src, v6)
+                    conn.sndNxt = (conn.sndNxt + data.size) and 0xFFFFFFFFL
+                    conn.unackedSince = System.currentTimeMillis()
+                    conn.lastUnacked = wrap(v6, dst, src, IpProto.TCP, s)
+                    conn.lastUnacked
+                }
+            } ?: continue
+            writeTun(seg)
         }
         synchronized(conn.lock) {
             if (conn.closed) return
@@ -696,19 +700,27 @@ class TunCore(
                 } else false
             }
             for (conn in tcpConns.values) {
+                var resetId: TcpConnId? = null
+                var resend: ByteArray? = null
+                var giveUp = false
                 synchronized(conn.lock) {
-                    if (conn.closed || conn.unackedSince == 0L) continue
-                    if (now - conn.unackedSince > 1000) {
+                    if (!conn.closed && conn.unackedSince != 0L && now - conn.unackedSince > 1000) {
                         if (now - conn.unackedSince > 8000) {
-                            val id = conn.id
-                            sendRst(id.v6, addrBytes(id.srcIp), addrBytes(id.dstIp),
-                                id.srcPort, id.dstPort, conn.sndNxt, conn.rcvNxt)
-                            killTcp(conn)
+                            resetId = conn.id
+                            giveUp = true
                         } else {
-                            conn.lastUnacked?.let { writeTun(it) }
+                            resend = conn.lastUnacked
                             conn.unackedSince = now
                         }
                     }
+                }
+                if (giveUp) {
+                    val id = resetId!!
+                    sendRst(id.v6, addrBytes(id.srcIp), addrBytes(id.dstIp),
+                        id.srcPort, id.dstPort, conn.sndNxt, conn.rcvNxt)
+                    killTcp(conn)
+                } else if (resend != null) {
+                    writeTun(resend!!)
                 }
             }
         }
