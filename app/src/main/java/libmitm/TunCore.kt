@@ -700,7 +700,7 @@ class TunCore(
                 } else false
             }
             for (conn in tcpConns.values) {
-                var resetId: TcpConnId? = null
+                var resetId: FlowId? = null
                 var resend: ByteArray? = null
                 var giveUp = false
                 synchronized(conn.lock) {
