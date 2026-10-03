@@ -1,6 +1,7 @@
 package libmitm
 
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 object Libmitm {
     const val IPv6Enable = 0
@@ -12,7 +13,7 @@ object Libmitm {
     @JvmStatic
     fun pollConnection(): RakConn? {
         return try {
-            pending.take()
+            pending.poll(50, TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {
             null
         }
