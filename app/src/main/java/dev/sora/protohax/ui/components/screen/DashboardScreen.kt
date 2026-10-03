@@ -126,20 +126,36 @@ private fun BottomFloatingActionButton(
     val mContext = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    fun launchTargetApp() {
+        try {
+            val pkg = applicationSelected.value
+            if (pkg.isEmpty()) return
+            val launch = mContext.packageManager.getLaunchIntentForPackage(pkg)
+            if (launch != null) {
+                launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                mContext.startActivity(launch)
+            }
+        } catch (t: Throwable) { }
+    }
+
     fun connectVPN() {
         val intent = Intent(AppService.ACTION_START)
         intent.setPackage(mContext.packageName)
         mContext.startForegroundService(intent)
 
         scope.launch {
+            try { kotlinx.coroutines.delay(1200) } catch (t: Throwable) { }
+            launchTargetApp()
+        }
+
+        scope.launch {
 			val result = snackbarHostState.showSnackbar(
 				message = mContext.getString(R.string.mitm_connected),
 				actionLabel = mContext.getString(R.string.mitm_connected_launch),
-				duration = SnackbarDuration.Short
+				duration = SnackbarDuration.Long
 			)
 			if (result == SnackbarResult.ActionPerformed) {
-				val intent1 = mContext.packageManager.getLaunchIntentForPackage(applicationSelected.value)
-				mContext.startActivity(intent1)
+				launchTargetApp()
 			}
         }
     }
