@@ -17,11 +17,10 @@ jobs:
           java-version: 17
           cache: gradle
 
-      - name: Download patched ProtoHax library (1.26.50)
+      - name: Unpack patched ProtoHax library (1.26.50, in-repo)
         run: |
-          curl -L "https://user.uploads.dev/file/518b0c0c90b53e564bb24eaf5cf1cdb1.zip" -o /tmp/protohax-lib.zip
           rm -rf /tmp/protohax-lib
-          unzip -q /tmp/protohax-lib.zip -d /tmp/protohax-lib
+          unzip -q protohax-lib-1.26.50.zip -d /tmp/protohax-lib
           ls /tmp/protohax-lib
 
       - name: Publish library to mavenLocal
