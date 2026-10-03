@@ -168,11 +168,11 @@ class TunCoreTest {
             t.toTun.write(tcpToTun(iss + 1, synAck.seq + 1, TcpFlag.ACK, "cli-data".toByteArray()))
             t.toTun.flush()
             assertArrayEquals("cli-data".toByteArray(), got.poll(5, TimeUnit.SECONDS) ?: throw AssertionError("server got nothing"))
-            val dataPkt = readTcpFromTun(t.fromTun)
+            val dataPkt = readTcpFromTun(t.fromTun, skipPureAck = true)
             assertArrayEquals("serv-data".toByteArray(), dataPkt.payload)
             t.toTun.write(tcpToTun(iss + 1 + 8, dataPkt.seq + 9, TcpFlag.ACK or TcpFlag.FIN, ByteArray(0)))
             t.toTun.flush()
-            val fin = readTcpFromTun(t.fromTun)
+            val fin = readTcpFromTun(t.fromTun, skipPureAck = true)
             assertTrue((fin.flags and TcpFlag.FIN) != 0)
         } finally {
             t.core.close()
@@ -182,7 +182,7 @@ class TunCoreTest {
 
     private data class TcpSeg(val seq: Long, val ack: Long, val flags: Int, val payload: ByteArray)
 
-    private fun readTcpFromTun(`in`: PipedInputStream): TcpSeg {
+    private fun readTcpFromTun(`in`: PipedInputStream, skipPureAck: Boolean = false): TcpSeg {
         val deadline = System.currentTimeMillis() + 8000
         val framer = PacketFramer()
         val tmp = ByteArray(4096)
@@ -196,7 +196,10 @@ class TunCoreTest {
                     val total = getU16(pkt, 2)
                     val tcp = pkt.copyOfRange(ihl, total)
                     val hlen = ((tcp[12].toInt() and 0xFF) ushr 4) * 4
-                    return TcpSeg(getU32(tcp, 4), getU32(tcp, 8), tcp[13].toInt() and 0xFF, tcp.copyOfRange(hlen, tcp.size))
+                    val flags = tcp[13].toInt() and 0xFF
+                    val payload = tcp.copyOfRange(hlen, tcp.size)
+                    if (skipPureAck && payload.isEmpty() && (flags and (TcpFlag.FIN or TcpFlag.RST)) == 0) continue
+                    return TcpSeg(getU32(tcp, 4), getU32(tcp, 8), flags, payload)
                 }
             } else {
                 Thread.sleep(10)
