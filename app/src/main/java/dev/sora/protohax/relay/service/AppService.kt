@@ -69,6 +69,7 @@ class AppService : VpnService() {
                 } catch (t: Throwable) {
                     logError("startVPN", t)
                 }
+                dev.sora.protohax.util.SvcJournal.mark("svc.cmd-return isActive=" + isActive)
                 if (!isActive) stopSelf()
             } else {
                 stopVPN()
@@ -120,16 +121,16 @@ class AppService : VpnService() {
         dev.sora.protohax.util.SvcJournal.mark("vpn.established")
 
         dev.sora.protohax.util.SvcJournal.mark("tun.build-try")
+        val vpnFd = try {
+            vpnDescriptor.fileDescriptor
+        } catch (t: Throwable) {
+            reportTunFailure("tun.fd-fail", t)
+            return
+        }
+        dev.sora.protohax.util.SvcJournal.mark("tun.fd-ok")
         val tun = try {
-            TUN().apply {
-                fileDescriber = vpnDescriptor.fd
+            TUN(java.io.FileInputStream(vpnFd), java.io.FileOutputStream(vpnFd)).apply {
                 mtu = VPN_MTU
-                iPv6Config = when {
-                    hasIPv4 && hasIPv6 -> Libmitm.IPv6Enable
-                    hasIPv4 -> Libmitm.IPv6Disable
-                    hasIPv6 -> Libmitm.IPv6Only
-                    else -> error("invalid state")
-                }
             }
         } catch (t: Throwable) {
             reportTunFailure("tun.build-fail", t)
@@ -170,7 +171,10 @@ class AppService : VpnService() {
 
     private fun stopVPN() {
         isActive = false
-		vpnDescriptor?.close()
+		try {
+			vpnDescriptor?.close()
+		} catch (_: Throwable) {
+		}
 		tun?.let {
 			try {
 				serviceListeners.forEach { l -> l.onServiceStopped() }
