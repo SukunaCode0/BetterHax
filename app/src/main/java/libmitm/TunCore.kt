@@ -398,7 +398,8 @@ class TunCore(
         return when (payload[0].toInt() and 0xFF) {
             0x01, 0x02 -> hasMagicAt(payload, 9)
             0x05, 0x06, 0x07, 0x08 -> hasMagicAt(payload, 1)
-            0x00, 0x03, 0x04, 0xA0, 0xC0, in 0x80..0x8F -> true
+            0x00, 0x03, 0x04 -> hasMagicAt(payload, 1) || hasMagicAt(payload, 9)
+            0xA0, 0xC0, in 0x80..0x8F -> true
             else -> false
         }
     }
