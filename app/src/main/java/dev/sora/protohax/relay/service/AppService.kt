@@ -64,13 +64,26 @@ class AppService : VpnService() {
             if (ACTION_START == action) {
                 dev.sora.protohax.util.SvcJournal.mark("svc.start-cmd")
                 startForeground(1, createNotification())
-                try {
-                    startVPN()
-                } catch (t: Throwable) {
-                    logError("startVPN", t)
-                }
-                dev.sora.protohax.util.SvcJournal.mark("svc.cmd-return isActive=" + isActive)
-                if (!isActive) stopSelf()
+                Thread({
+                    try {
+                        startVPN()
+                    } catch (t: Throwable) {
+                        reportTunFailure("vpn.thread-fail", t)
+                    }
+                    dev.sora.protohax.util.SvcJournal.mark("svc.worker-return isActive=" + isActive)
+                    if (!isActive) stopSelf()
+                }, "betterhax-vpn-start").start()
+                Thread({
+                    try {
+                        Thread.sleep(25000)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                    if (!isActive) {
+                        dev.sora.protohax.util.SvcJournal.mark("watchdog.not-up")
+                        dumpLogcat()
+                    }
+                }, "betterhax-vpn-watchdog").start()
             } else {
                 stopVPN()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -167,6 +180,25 @@ class AppService : VpnService() {
         } catch (_: Throwable) {
         }
         logError("tun", t)
+    }
+
+    private fun dumpLogcat() {
+        try {
+            val pid = android.os.Process.myPid()
+            val out = StringBuilder()
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "threadtime", "--pid=" + pid))
+                val buf = p.inputStream.bufferedReader()
+                val lines = buf.readLines()
+                p.waitFor()
+                for (l in lines.takeLast(300)) out.appendLine(l)
+            } catch (t: Throwable) {
+                out.appendLine("logcat exec failed: " + t.javaClass.simpleName + ": " + t.message)
+            }
+            dev.sora.protohax.util.SvcJournal.mark("watchdog.logcat-lines dumped")
+            java.io.File(filesDir, "crash.log").appendText("===== logcat (pid " + pid + ") =====\n" + out.toString() + "\n")
+        } catch (_: Throwable) {
+        }
     }
 
     private fun stopVPN() {
