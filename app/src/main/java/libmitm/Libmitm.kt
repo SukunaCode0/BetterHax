@@ -13,7 +13,7 @@ object Libmitm {
     @JvmStatic
     fun pollConnection(): RakConn? {
         return try {
-            pending.poll(50, TimeUnit.MILLISECONDS)
+            pending.take()
         } catch (_: InterruptedException) {
             null
         }
