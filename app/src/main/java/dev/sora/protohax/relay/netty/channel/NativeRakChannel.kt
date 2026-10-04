@@ -19,7 +19,7 @@ import java.net.SocketAddress
 
 class NativeRakChannel(parent: Channel, private val rakConn: RakConn) : AbstractChannel(parent) {
 
-	private val metadata = ChannelMetadata(false)
+	private val metadata = ChannelMetadata(false, 65535) // Indicate this channel doesn't support half-closure
 	private val config = NativeRakConfig(this).also {
 		it.protocolVersion = rakConn.version.toInt()
 		it.targetAddress = InetSocketAddress(rakConn.localAddr, rakConn.localPort.toInt())
