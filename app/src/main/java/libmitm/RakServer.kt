@@ -170,7 +170,7 @@ class RakServerSession(
 
     private fun handleAckNack(d: ByteArray, isAck: Boolean) {
         if (d.size < 3) return
-        val count = getU16Le(d, 1)
+        val count = getU16(d, 1)
         var pos = 3
         synchronized(lock) {
             var i = 0
@@ -213,7 +213,7 @@ class RakServerSession(
         }
         val out = ByteArray(3 + list.size * 4)
         out[0] = 0xC0.toByte()
-        putU16Le(out, 1, list.size)
+        putU16(out, 1, list.size)
         var pos = 3
         for (s in list) {
             out[pos++] = 1
@@ -319,7 +319,7 @@ class RakServerSession(
         }
         val out = ByteArray(3 + list.size * 4)
         out[0] = 0xC0.toByte()
-        putU16Le(out, 1, list.size)
+        putU16(out, 1, list.size)
         var pos = 3
         for (s in list) {
             out[pos++] = 1
