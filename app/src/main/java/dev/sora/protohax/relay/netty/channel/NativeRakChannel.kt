@@ -117,6 +117,7 @@ class NativeRakChannel(parent: Channel, private val rakConn: RakConn) : Abstract
 				buf.remove()
 			} else if (msg is RakMessage) {
 				writeByteBuf(msg.content())
+				buf.remove()
 			} else {
 				buf.remove(UnsupportedOperationException("unsupported message type: " + StringUtil.simpleClassName(msg)))
 			}
