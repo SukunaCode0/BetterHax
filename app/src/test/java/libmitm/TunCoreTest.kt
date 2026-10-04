@@ -154,7 +154,7 @@ class TunCoreTest {
             t.toTun.flush()
             drainTun(t.fromTun)
             val conn = Libmitm.pollConnection() ?: throw AssertionError("no connection offered")
-            val payload = "hi".toByteArray()
+            val payload = byteArrayOf(0xFE.toByte()) + "hi".toByteArray()
             t.toTun.write(gameUdp("10.13.37.2", 5002, "1.2.3.4", 19132, connectedDatagram(0, payload)))
             t.toTun.flush()
             assertArrayEquals(payload, conn.read())
@@ -179,6 +179,58 @@ class TunCoreTest {
         return dg.copyOfRange(pos, pos + (bitLen + 7) / 8)
     }
 
+    private fun framePayload(dg: ByteArray): ByteArray {
+        var pos = 4
+        val flags = dg[pos++].toInt() and 0xFF
+        val rel = (flags ushr 5) and 0x07
+        val bitLen = ((dg[pos].toInt() and 0xFF) shl 8) or (dg[pos + 1].toInt() and 0xFF)
+        pos += 2 + 3
+        if (rel == 1 || rel == 3 || rel == 4) pos += 4
+        if (((flags ushr 4) and 0x01) != 0) pos += 10
+        return dg.copyOfRange(pos, pos + (bitLen + 7) / 8)
+    }
+
+    @Test(timeout = 60000)
+    fun rakConnectionHandshake() {
+        val t = newTun()
+        try {
+            t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, openReq1()))
+            t.toTun.flush()
+            drainTun(t.fromTun)
+            t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, openReq2()))
+            t.toTun.flush()
+            drainTun(t.fromTun)
+            val conn = Libmitm.pollConnection() ?: throw AssertionError("no connection offered")
+            val reqTime = 987654321L
+            val req = ByteArray(18)
+            req[0] = 0x09
+            putU64Be(req, 9, reqTime)
+            t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, connectedDatagram(0, req)))
+            t.toTun.flush()
+            val accepted = framePayload(readDatagramFromTun(t.fromTun))
+            assertEquals(0x10, accepted[0].toInt() and 0xFF)
+            assertEquals(166, accepted.size)
+            assertEquals(reqTime, getU64Be(accepted, 150))
+            val pingTime = 1122334455L
+            val ping = ByteArray(9)
+            ping[0] = 0x00
+            putU64Be(ping, 1, pingTime)
+            t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, connectedDatagram(1, ping)))
+            t.toTun.flush()
+            val pong = framePayload(readDatagramFromTun(t.fromTun))
+            assertEquals(0x03, pong[0].toInt() and 0xFF)
+            assertEquals(17, pong.size)
+            assertEquals(pingTime, getU64Be(pong, 1))
+            val login = byteArrayOf(0xFE.toByte()) + "login-bytes".toByteArray()
+            t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, connectedDatagram(2, login)))
+            t.toTun.flush()
+            assertArrayEquals(login, conn.read())
+            conn.close()
+        } finally {
+            t.core.close()
+        }
+    }
+
     @Test(timeout = 60000)
     fun gameUdpInterceptAndRewrite() {
         val t = newTun()
@@ -195,7 +247,7 @@ class TunCoreTest {
             assertEquals("10.13.37.2", conn.remoteAddr)
             assertEquals(5000L, conn.remotePort)
             assertEquals(11L, conn.version)
-            val payload = "raknet-hello".toByteArray()
+            val payload = byteArrayOf(0xFE.toByte()) + "raknet-hello".toByteArray()
             t.toTun.write(gameUdp("10.13.37.2", 5000, "1.2.3.4", 19132, connectedDatagram(0, payload)))
             t.toTun.flush()
             assertArrayEquals(payload, conn.read())
