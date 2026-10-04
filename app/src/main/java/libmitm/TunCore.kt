@@ -237,6 +237,7 @@ class TunCore(
     private val writeErrs = AtomicLong(0)
     @Volatile private var firstWriteErr: String? = null
     private val tcpHandshakes = AtomicLong(0)
+    private val ipInPkts = AtomicLong(0)
 
     private data class UdpFlow(val socket: DatagramSocket, var lastSeen: Long, val id: FlowId)
     private val udpFlows = ConcurrentHashMap<FlowId, UdpFlow>()
@@ -345,6 +346,7 @@ class TunCore(
                 continue
             }
             for (p in packets) {
+                ipInPkts.incrementAndGet()
                 try {
                     handlePacket(p)
                 } catch (_: Throwable) {
@@ -839,6 +841,7 @@ class TunCore(
                     } catch (_: Throwable) {
                     }
                     logger?.invoke("rakstat flows=" + gameFlows.size + " udp=" + udpFlows.size + " tcp=" + tcpConns.size +
+                        " ipin=" + ipInPkts.get() +
                         " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
                         " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
                         " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout)
