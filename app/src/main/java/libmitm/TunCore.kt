@@ -242,6 +242,9 @@ class TunCore(
     @Volatile private var pingSock: DatagramSocket? = null
     private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long)
     private val pingTargets = ConcurrentHashMap<String, PingTarget>()
+    private val iface4: ByteArray by lazy { InetAddress.getByName("10.13.37.1").address }
+    private val iface6: ByteArray by lazy { InetAddress.getByName("1337::1").address }
+    private fun ifaceAddr(v6: Boolean): ByteArray = if (v6) iface6 else iface4
     private val ipInPkts = AtomicLong(0)
 
     private data class UdpFlow(val socket: DatagramSocket, var lastSeen: Long, val id: FlowId)
@@ -550,6 +553,12 @@ class TunCore(
                     gameOutPkts.incrementAndGet()
                     gameOutBytes.addAndGet(bytes.size.toLong())
                     writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+                    try {
+                        val ia = ifaceAddr(v6)
+                        val udp2 = buildUdp(dport, sport, bytes, ia, srcCopy, v6)
+                        writeTun(wrap(v6, ia, srcCopy, IpProto.UDP, udp2))
+                    } catch (_: Throwable) {
+                    }
                 }
             }
             conn.onWrite = { bytes ->
@@ -858,6 +867,12 @@ class TunCore(
                 val udp = buildUdp(p.port, tg.clientPort, data, p.address.address, tg.clientIp, false)
                 pongReal.incrementAndGet()
                 writeTun(buildIPv4(p.address.address, tg.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+                try {
+                    val ia = ifaceAddr(false)
+                    val udp2 = buildUdp(p.port, tg.clientPort, data, ia, tg.clientIp, false)
+                    writeTun(buildIPv4(ia, tg.clientIp, IpProto.UDP, udp2, ipId.getAndIncrement()))
+                } catch (_: Throwable) {
+                }
             } catch (_: Throwable) {
             }
         }
@@ -919,7 +934,7 @@ class TunCore(
                         " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
                         " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
                         " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout +
-                        " pfwd=" + pingFwd.get() + " preal=" + pongReal.get())
+                        " pfwd=" + pingFwd.get() + " preal=" + pongReal.get() + " dual=1)
                 } catch (_: Throwable) {
                 }
             }
