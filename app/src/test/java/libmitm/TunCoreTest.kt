@@ -122,6 +122,55 @@ class TunCoreTest {
         throw AssertionError("timed out waiting for raknet datagram")
     }
 
+    private fun ackPacket(vararg seqs: Int): ByteArray {
+        val b = ByteArray(3 + seqs.size * 4)
+        b[0] = 0xC0.toByte()
+        b[1] = ((seqs.size ushr 8) and 0xFF).toByte()
+        b[2] = (seqs.size and 0xFF).toByte()
+        var p = 3
+        for (s in seqs) {
+            b[p++] = 1
+            b[p++] = (s and 0xFF).toByte()
+            b[p++] = ((s ushr 8) and 0xFF).toByte()
+            b[p++] = ((s ushr 16) and 0xFF).toByte()
+        }
+        return b
+    }
+
+    private fun drainTun(`in`: PipedInputStream) {
+        while (`in`.available() > 0) {
+            `in`.read(ByteArray(4096))
+        }
+    }
+
+    @Test(timeout = 60000)
+    fun rakAckSuppressesResend() {
+        val t = newTun()
+        try {
+            t.toTun.write(gameUdp("10.13.37.2", 5002, "1.2.3.4", 19132, openReq1()))
+            t.toTun.flush()
+            drainTun(t.fromTun)
+            t.toTun.write(gameUdp("10.13.37.2", 5002, "1.2.3.4", 19132, openReq2()))
+            t.toTun.flush()
+            drainTun(t.fromTun)
+            val conn = Libmitm.pollConnection() ?: throw AssertionError("no connection offered")
+            val payload = "hi".toByteArray()
+            t.toTun.write(gameUdp("10.13.37.2", 5002, "1.2.3.4", 19132, connectedDatagram(0, payload)))
+            t.toTun.flush()
+            assertArrayEquals(payload, conn.read())
+            conn.write("yo".toByteArray())
+            assertArrayEquals("yo".toByteArray(), datagramPayload(readDatagramFromTun(t.fromTun)))
+            t.toTun.write(gameUdp("10.13.37.2", 5002, "1.2.3.4", 19132, ackPacket(0)))
+            t.toTun.flush()
+            drainTun(t.fromTun)
+            Thread.sleep(900)
+            assertEquals(0, t.fromTun.available())
+            conn.close()
+        } finally {
+            t.core.close()
+        }
+    }
+
     private fun datagramPayload(dg: ByteArray): ByteArray {
         var pos = 4
         pos += 1
@@ -197,7 +246,11 @@ class TunCoreTest {
             System.arraycopy(rakMagic(), 0, ping, 9, 16)
             t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, ping))
             t.toTun.flush()
-            assertEquals(0x1C, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
+            val pongData = parseUdpFromTun(readTunPacket(t.fromTun)).third
+            assertEquals(0x1C, pongData[0].toInt() and 0xFF)
+            val pongParts = pongData.copyOfRange(33, pongData.size).toString(Charsets.UTF_8).split(";")
+            assertEquals("2193", pongParts[2])
+            assertEquals("1.26.50", pongParts[3])
             t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, openReq1()))
             t.toTun.flush()
             assertEquals(0x06, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
