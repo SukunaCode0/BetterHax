@@ -157,6 +157,8 @@ class AppService : VpnService() {
             return
         }
         tun.logger = { dev.sora.protohax.util.SvcJournal.mark(it) }
+        tun.setProtectors({ s -> try { protect(s); true } catch (_: Throwable) { false } }, { s -> try { protect(s); true } catch (_: Throwable) { false } })
+        dev.sora.protohax.util.SvcJournal.mark("tun.protect-ok")
         this.tun = tun
         dev.sora.protohax.util.SvcJournal.mark("tun.built")
         try {
