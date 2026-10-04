@@ -139,6 +139,7 @@ class AppService : VpnService() {
         }
         this.vpnDescriptor = vpnDescriptor
         dev.sora.protohax.util.SvcJournal.mark("vpn.established")
+        dev.sora.protohax.util.SvcJournal.mark("vpn.target=" + MainActivity.targetPackage)
 
         dev.sora.protohax.util.SvcJournal.mark("tun.build-try")
         val vpnFd = try {
