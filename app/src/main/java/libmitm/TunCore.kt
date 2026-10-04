@@ -366,6 +366,17 @@ class TunCore(
         }
     }
 
+    private fun isBroadcastOrMulticast(v6: Boolean, dst: ByteArray): Boolean {
+        if (!v6) {
+            if (dst.all { it == 255.toByte() }) return true
+            if ((dst[3].toInt() and 0xFF) == 255) return true
+            val first = dst[0].toInt() and 0xFF
+            if (first >= 224 && first <= 239) return true
+            return false
+        }
+        return (dst[0].toInt() and 0xFF) == 0xFF
+    }
+
     private fun ipStr(v6: Boolean, b: ByteArray): String = InetAddress.getByAddress(b).hostAddress
 
     private fun addrBytes(s: String): ByteArray = InetAddress.getByName(s).address
@@ -381,7 +392,7 @@ class TunCore(
         val dport = getU16(udp, 2)
         val payload = udp.copyOfRange(8, udp.size)
         val id = FlowId(v6, ipStr(v6, src), sport, ipStr(v6, dst), dport, IpProto.UDP)
-        if (dport in gamePorts) {
+        if (dport != 53 && !isBroadcastOrMulticast(v6, dst)) {
             handleGameUdp(id, v6, src, dst, sport, dport, payload)
             return
         }
@@ -448,6 +459,7 @@ class TunCore(
             val srcCopy = src.copyOf()
             val dstCopy = dst.copyOf()
             conn.onWrite = { bytes ->
+                f.lastSeen = System.currentTimeMillis()
                 val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
                 writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
             }
@@ -694,7 +706,7 @@ class TunCore(
                 } else false
             }
             gameFlows.entries.removeIf {
-                if (now - it.value.lastSeen > 90000) {
+                if (now - it.value.lastSeen > 600000) {
                     it.value.conn.close()
                     true
                 } else false
