@@ -11,6 +11,13 @@ class TUN {
     var mtu: Int = 1500
     var iPv6Config: Int = Libmitm.IPv6Disable
     var logger: ((String) -> Unit)? = null
+        set(v) {
+            field = v
+            try {
+                core?.logger = v
+            } catch (_: Throwable) {
+            }
+        }
     private var udpProtector: ((java.net.DatagramSocket) -> Boolean)? = null
     private var tcpProtector: ((java.net.Socket) -> Boolean)? = null
 
@@ -56,6 +63,7 @@ class TUN {
         core = TunCore(FileInputStream(p.fileDescriptor), FileOutputStream(p.fileDescriptor))
         core!!.udpProtector = udpProtector
         core!!.tcpProtector = tcpProtector
+        core!!.logger = logger
         log("tun.core-ok")
         core!!.start()
         log("tun.core-started")
