@@ -114,7 +114,7 @@ class RakServerSession(
         pings++
         if (d.size < 1 + 8 + 16) return
         val time = getU64Be(d, 1)
-        val pongStr = ("MCPE;BetterHax Relay;748;1.26.50;0;20;" + serverGuid +
+        val pongStr = ("MCPE;BetterHax Relay;2193;1.26.50;0;20;" + serverGuid +
             ";Bedrock level;Survival;1;19132;19132;").toByteArray(Charsets.UTF_8)
         val out = ByteArray(1 + 8 + 8 + 16 + pongStr.size)
         out[0] = 0x1C.toByte()
