@@ -934,7 +934,7 @@ class TunCore(
                         " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
                         " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
                         " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout +
-                        " pfwd=" + pingFwd.get() + " preal=" + pongReal.get() + " dual=1)
+                        " pfwd=" + pingFwd.get() + " preal=" + pongReal.get() + " dual=1")
                 } catch (_: Throwable) {
                 }
             }
