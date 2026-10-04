@@ -556,6 +556,7 @@ class TunCore(
             }
             flow = GameFlow(sess, System.currentTimeMillis(), id)
             gameFlows[id] = flow
+            try { logger?.invoke("game.open " + flowLabel(id) + " id=" + (payload[0].toInt() and 0xFF)) } catch (_: Throwable) { }
         }
         flow.lastSeen = System.currentTimeMillis()
         try {
