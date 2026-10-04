@@ -821,6 +821,11 @@ class TunCore(
                         pin += f.session.payloadsIn
                         pout += f.session.payloadsOut
                     }
+                    try {
+                        val det = gameFlows.values.take(4).joinToString(" ") { it.id.dstPort.toString() + ":" + it.session.idSummary() }
+                        logger?.invoke("rakdetail " + det)
+                    } catch (_: Throwable) {
+                    }
                     logger?.invoke("rakstat flows=" + gameFlows.size + " udp=" + udpFlows.size + " tcp=" + tcpConns.size +
                         " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
                         " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
