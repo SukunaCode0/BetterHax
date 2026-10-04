@@ -78,6 +78,8 @@ class RakServerSession(
     var payloadsIn = 0L
     var payloadsOut = 0L
     var offeredAt = 0L
+    private var clientGuid: Long? = null
+    private var rakConnected = false
 
     @Volatile
     var lastActivity = System.currentTimeMillis()
@@ -143,6 +145,17 @@ class RakServerSession(
     private fun handleOpen2(d: ByteArray) {
         open2++
         if (d.size < 1 + 16 + 8) return
+        try {
+            var q = 1 + 16
+            if (q < d.size) {
+                val t = d[q++].toInt() and 0xFF
+                if (t == 4) q += 6
+                else if (t == 6) q += 28
+                q += 2
+                if (q + 8 <= d.size) clientGuid = getU64Be(d, q)
+            }
+        } catch (_: Throwable) {
+        }
         val out = ByteArray(1 + 16 + 8 + 7 + 2 + 1)
         out[0] = 0x08.toByte()
         System.arraycopy(RAK_MAGIC_OUT, 0, out, 1, 16)
@@ -343,16 +356,94 @@ class RakServerSession(
 
     private fun deliver(payload: ByteArray) {
         if (payload.isEmpty() || closed) return
-        val shouldPush = synchronized(lock) { offered && !closed }
-        if (!shouldPush) return
-        payloadsIn++
-        try {
-            conn.push(payload)
-        } catch (_: Throwable) {
+        when (payload[0].toInt() and 0xFF) {
+            0xFE -> {
+                val shouldPush = synchronized(lock) { offered && !closed }
+                if (!shouldPush) return
+                payloadsIn++
+                try {
+                    conn.push(payload)
+                } catch (_: Throwable) {
+                }
+            }
+            0x09 -> handleConnectionRequest(payload)
+            0x13 -> synchronized(lock) { rakConnected = true }
+            0x00 -> handleInnerPing(payload)
+            0x15 -> shutdown()
+            else -> {
+            }
         }
     }
 
+    private fun writeAddr(b: ByteArray, off: Int, ip: ByteArray, port: Int, v6: Boolean): Int {
+        var q = off
+        if (!v6) {
+            b[q++] = 4
+            for (i in 0 until 4) b[q++] = (ip[i].toInt() xor 0xFF).toByte()
+            putU16(b, q, port)
+            return q + 2
+        }
+        b[q++] = 6
+        b[q++] = 23
+        b[q++] = 0
+        putU16(b, q, port)
+        q += 2
+        putU32(b, q, 0)
+        q += 4
+        System.arraycopy(ip, 0, b, q, 16)
+        q += 16
+        putU32(b, q, 0)
+        return q + 4
+    }
+
+    private fun handleConnectionRequest(p: ByteArray) {
+        if (p.size < 1 + 8 + 8 + 1) return
+        val guid = getU64Be(p, 1)
+        val time = getU64Be(p, 9)
+        val cg = clientGuid
+        if (cg != null && cg != guid) return
+        val v6 = clientIp.size == 16
+        val addrLen = if (v6) 29 else 7
+        val out = ByteArray(1 + addrLen + 2 + 20 * addrLen + 8 + 8)
+        out[0] = 0x10.toByte()
+        var q = 1
+        q = writeAddr(out, q, clientIp, clientPort, v6)
+        putU16(out, q, 0)
+        q += 2
+        repeat(20) {
+            q = if (!v6) {
+                if (it == 0) writeAddr(out, q, byteArrayOf(127, 0, 0, 1), 19132, false)
+                else writeAddr(out, q, byteArrayOf(0, 0, 0, 0), 19132, false)
+            } else {
+                if (it == 0) writeAddr(out, q, ByteArray(16).also { b -> b[15] = 1 }, 19132, true)
+                else writeAddr(out, q, ByteArray(16), 19132, true)
+            }
+        }
+        putU64Be(out, q, time)
+        q += 8
+        putU64Be(out, q, System.currentTimeMillis())
+        sendReliable(out)
+    }
+
+    private fun handleInnerPing(p: ByteArray) {
+        if (p.size < 9) return
+        val t = getU64Be(p, 1)
+        val out = ByteArray(17)
+        out[0] = 0x03.toByte()
+        putU64Be(out, 1, t)
+        putU64Be(out, 9, System.currentTimeMillis())
+        sendReliable(out)
+    }
+
     fun sendConnected(payload: ByteArray) {
+        sendFrame(payload, true)
+    }
+
+    private fun sendReliable(payload: ByteArray) {
+        sendFrame(payload, false)
+    }
+
+    private fun sendFrame(payload: ByteArray, ordered: Boolean) {
         if (payload.isEmpty()) return
         synchronized(lock) {
             if (!offered || closed) return
@@ -366,25 +457,28 @@ class RakServerSession(
                 splitId = (splitId + 1) and 0xFFFF
                 frameSplitId = splitId
             }
+            val rel = if (ordered) RELIABLE_ORDERED else 2
             var splitIdx = 0
             while (offset < payload.size) {
                 val end = minOf(offset + maxChunk, payload.size)
                 val chunk = payload.copyOfRange(offset, end)
                 offset = end
                 val split = frameSplitCount > 0
-                val headerLen = 1 + 2 + 3 + 4 + (if (split) 10 else 0)
+                val headerLen = 1 + 2 + 3 + (if (ordered) 4 else 0) + (if (split) 10 else 0)
                 val frame = ByteArray(headerLen + chunk.size)
                 var p = 0
-                frame[p++] = (((RELIABLE_ORDERED shl 5) or (if (split) 0x10 else 0)) and 0xFF).toByte()
+                frame[p++] = (((rel shl 5) or (if (split) 0x10 else 0)) and 0xFF).toByte()
                 val bits = chunk.size * 8
                 frame[p++] = ((bits ushr 8) and 0xFF).toByte()
                 frame[p++] = (bits and 0xFF).toByte()
                 putU24Le(frame, p, msgIndex)
                 p += 3
                 msgIndex = (msgIndex + 1) and 0xFFFFFF
-                putU24Le(frame, p, orderIndex)
-                p += 3
-                frame[p++] = 0
+                if (ordered) {
+                    putU24Le(frame, p, orderIndex)
+                    p += 3
+                    frame[p++] = 0
+                }
                 if (split) {
                     putU32Le(frame, p, frameSplitCount.toLong())
                     p += 4
@@ -406,9 +500,7 @@ class RakServerSession(
                 payloadsOut++
                 sendRaw(dg)
             }
-            if (frameSplitCount == 0) {
-                orderIndex = (orderIndex + 1) and 0xFFFFFF
-            } else {
+            if (ordered) {
                 orderIndex = (orderIndex + 1) and 0xFFFFFF
             }
         }
