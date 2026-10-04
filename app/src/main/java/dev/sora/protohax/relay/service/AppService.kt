@@ -45,10 +45,12 @@ class AppService : VpnService() {
 
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
+		dev.sora.protohax.util.SvcJournal.mark("svc.onCreate")
 		MyApplication.overlayManager.currentContext = this
     }
 
     override fun onDestroy() {
+		dev.sora.protohax.util.SvcJournal.mark("svc.onDestroy")
 		logInfo("VPN service destroyed")
 		stopVPN()
 		MyApplication.overlayManager.currentContext = null
@@ -60,6 +62,7 @@ class AppService : VpnService() {
         val action = intent.action
         try {
             if (ACTION_START == action) {
+                dev.sora.protohax.util.SvcJournal.mark("svc.start-cmd")
                 startForeground(1, createNotification())
                 try {
                     startVPN()
@@ -110,9 +113,11 @@ class AppService : VpnService() {
             null
         } ?: run {
             logError("vpn establish returned null (permission revoked or another VPN active?)")
+            dev.sora.protohax.util.SvcJournal.mark("vpn.establish.NULL")
             return
         }
         this.vpnDescriptor = vpnDescriptor
+        dev.sora.protohax.util.SvcJournal.mark("vpn.established")
 
         val tun = TUN().apply {
             fileDescriber = vpnDescriptor.fd
@@ -126,11 +131,13 @@ class AppService : VpnService() {
         }
         this.tun = tun
         tun.start()
+        dev.sora.protohax.util.SvcJournal.mark("tun.started")
         logInfo("netstack started")
         isActive = true
         try {
 			MinecraftRelay.announceRelayUp()
             serviceListeners.forEach { it.onServiceStarted() }
+            dev.sora.protohax.util.SvcJournal.mark("relay.up isActive=" + isActive)
         } catch (t: Throwable) {
             logError("start callback", t)
         }
