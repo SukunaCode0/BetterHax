@@ -49,6 +49,12 @@ class AppService : VpnService() {
 		MyApplication.overlayManager.currentContext = this
     }
 
+    override fun onRevoke() {
+		dev.sora.protohax.util.SvcJournal.mark("svc.revoked")
+		stopVPN()
+		stopSelf()
+    }
+
     override fun onDestroy() {
 		dev.sora.protohax.util.SvcJournal.mark("svc.onDestroy")
 		logInfo("VPN service destroyed")
@@ -85,6 +91,7 @@ class AppService : VpnService() {
                     }
                 }, "betterhax-vpn-watchdog").start()
             } else {
+                dev.sora.protohax.util.SvcJournal.mark("svc.stop-cmd")
                 stopVPN()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
