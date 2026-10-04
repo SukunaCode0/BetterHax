@@ -404,7 +404,7 @@ class TunCore(
         return (dst[0].toInt() and 0xFF) == 0xFF
     }
 
-    private val RAKNET_MAGIC = byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte(), 0x00.toByte())
+    private val RAKNET_MAGIC = byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x12, 0x34, 0x56, 0x78)
 
     private fun hasMagicAt(payload: ByteArray, off: Int): Boolean {
         if (payload.size < off + 16) return false
