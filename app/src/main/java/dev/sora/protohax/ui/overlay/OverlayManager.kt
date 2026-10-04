@@ -46,10 +46,11 @@ class OverlayManager : ServiceListener {
 		params.x = 0
 		params.y = 100
 
-		val imageView = ImageView(ctx)
+		val appCtx = MyApplication.instance
+		val imageView = ImageView(appCtx)
 
 		ResourcesCompat.getDrawable(
-			ctx.resources, R.mipmap.ic_launcher, ctx.theme
+			appCtx.resources, R.mipmap.ic_launcher, appCtx.theme
 		)?.let { drawable ->
 			val bitmap = Bitmap.createBitmap(
 				(drawable.intrinsicWidth * 0.7).toInt(), (drawable.intrinsicHeight * 0.7).toInt(),
@@ -69,9 +70,9 @@ class OverlayManager : ServiceListener {
 		this.entranceView = imageView
 		wm.addView(imageView, params)
 
-		renderLayerView = RenderLayerView(ctx, wm, MinecraftRelay.session)
+		renderLayerView = RenderLayerView(appCtx, wm, MinecraftRelay.session)
 		menu.visibility = false
-		menu.display(wm, ctx)
+		menu.display(wm, appCtx)
 
 		shortcuts.forEach {
 			it.display(wm)
