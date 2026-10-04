@@ -217,6 +217,9 @@ class TunCore(
     private val tunOutput: OutputStream,
     private val gamePorts: Set<Int> = setOf(19132, 19133)
 ) {
+    var udpProtector: ((DatagramSocket) -> Boolean)? = null
+    var tcpProtector: ((Socket) -> Boolean)? = null
+    private val errorLogCount = AtomicInteger(0)
     private val running = AtomicBoolean(false)
     private val ipId = AtomicInteger(Random.nextInt(65536))
     private val threads = mutableListOf<Thread>()
@@ -283,7 +286,12 @@ class TunCore(
             } catch (_: InterruptedException) {
             } catch (_: IOException) {
             } catch (t: Throwable) {
-                t.printStackTrace()
+                if (errorLogCount.getAndIncrement() < 8) {
+                    try {
+                        android.util.Log.e("TunCore", "thread died: " + t.javaClass.simpleName + ": " + t.message)
+                    } catch (_: Throwable) {
+                    }
+                }
             }
         }, "libmitm-$name")
         t.isDaemon = true
@@ -416,8 +424,14 @@ class TunCore(
         }
         var flow = udpFlows[id]
         if (flow == null) {
+            pruneUdpFlows()
             val sock = try {
-                DatagramSocket()
+                DatagramSocket().also { s ->
+                    try {
+                        udpProtector?.invoke(s)
+                    } catch (_: Throwable) {
+                    }
+                }
             } catch (_: Throwable) {
                 return
             }
@@ -458,6 +472,16 @@ class TunCore(
             val data = p.data.copyOfRange(0, p.length)
             val udp = buildUdp(p.port, flow.id.srcPort, data, p.address.address, addrBytes(flow.id.srcIp), v6)
             writeTun(wrap(v6, addrBytes(flow.id.dstIp), addrBytes(flow.id.srcIp), IpProto.UDP, udp))
+        }
+    }
+
+    private fun pruneUdpFlows() {
+        if (udpFlows.size <= 64) return
+        val oldest = udpFlows.entries.minByOrNull { it.value.lastSeen } ?: return
+        udpFlows.remove(oldest.key)
+        try {
+            oldest.value.socket.close()
+        } catch (_: Throwable) {
         }
     }
 
@@ -503,6 +527,10 @@ class TunCore(
         val id = FlowId(v6, ipStr(v6, src), sport, ipStr(v6, dst), dport, IpProto.TCP)
         var conn = tcpConns[id]
         if (conn == null) {
+            if (tcpConns.size > 256) {
+                sendRst(v6, src, dst, sport, dport, 0, (seq + 1) and 0xFFFFFFFFL)
+                return
+            }
             if ((flags and TcpFlag.SYN) == 0) {
                 sendRst(v6, src, dst, sport, dport, 0, (seq + 1) and 0xFFFFFFFFL)
                 return
@@ -609,6 +637,10 @@ class TunCore(
             val sock = try {
                 val s = Socket()
                 s.tcpNoDelay = true
+                try {
+                    tcpProtector?.invoke(s)
+                } catch (_: Throwable) {
+                }
                 s.connect(InetSocketAddress(InetAddress.getByAddress(dst), dport), 15000)
                 s
             } catch (_: Throwable) {
@@ -715,7 +747,7 @@ class TunCore(
             }
             val now = System.currentTimeMillis()
             udpFlows.entries.removeIf {
-                if (now - it.value.lastSeen > 120000) {
+                if (now - it.value.lastSeen > 60000) {
                     try {
                         it.value.socket.close()
                     } catch (_: Throwable) {
