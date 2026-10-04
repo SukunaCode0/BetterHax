@@ -115,17 +115,6 @@ class RakServerSession(
     private fun handlePing(d: ByteArray) {
         pings++
         if (d.size < 1 + 8 + 16) return
-        if (Libmitm.hasReal(conn.localAddr + ":" + conn.localPort)) return
-        val time = getU64Be(d, 1)
-        val pongStr = ("MCPE;BetterHax Relay;2193;1.26.50;0;20;" + serverGuid +
-            ";Bedrock level;Survival;1;19132;19132;").toByteArray(Charsets.UTF_8)
-        val out = ByteArray(1 + 8 + 8 + 16 + pongStr.size)
-        out[0] = 0x1C.toByte()
-        putU64Be(out, 1, time)
-        putU64Be(out, 9, serverGuid)
-        System.arraycopy(RAK_MAGIC_OUT, 0, out, 17, 16)
-        System.arraycopy(pongStr, 0, out, 33, pongStr.size)
-        sendRaw(out)
     }
 
     private fun handleOpen1(d: ByteArray) {
