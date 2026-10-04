@@ -19,6 +19,9 @@ class TunCoreTest {
 
     private data class TunPair(val core: TunCore, val toTun: PipedOutputStream, val fromTun: PipedInputStream)
 
+    private val tunPacketQueue = ArrayDeque<ByteArray>()
+    private var tunFramer = PacketFramer()
+
     private fun newTun(): TunPair {
         val toTunOut = PipedOutputStream()
         val toTunIn = PipedInputStream(toTunOut, 65536)
@@ -27,18 +30,23 @@ class TunCoreTest {
         val core = TunCore(toTunIn, fromTunOut)
         core.start()
         Libmitm.drain()
+        tunPacketQueue.clear()
+        tunFramer = PacketFramer()
         return TunPair(core, toTunOut, fromTunIn)
     }
 
     private fun readTunPacket(`in`: PipedInputStream, timeoutMs: Long = 5000): ByteArray {
-        val framer = PacketFramer()
+        if (tunPacketQueue.isNotEmpty()) return tunPacketQueue.removeFirst()
         val tmp = ByteArray(4096)
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (`in`.available() > 0) {
                 val n = `in`.read(tmp)
-                val ps = framer.feed(tmp, 0, n)
-                if (ps.isNotEmpty()) return ps[0]
+                if (n > 0) {
+                    val ps = tunFramer.feed(tmp, 0, n)
+                    tunPacketQueue.addAll(ps)
+                    if (tunPacketQueue.isNotEmpty()) return tunPacketQueue.removeFirst()
+                }
             } else {
                 Thread.sleep(10)
             }
@@ -163,6 +171,7 @@ class TunCoreTest {
     }
 
     private fun drainTun(`in`: PipedInputStream) {
+        tunPacketQueue.clear()
         while (`in`.available() > 0) {
             `in`.read(ByteArray(4096))
         }
@@ -323,11 +332,8 @@ class TunCoreTest {
             System.arraycopy(rakMagic(), 0, ping, 9, 16)
             t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, ping))
             t.toTun.flush()
-            val pongData = parseUdpFromTun(readTunPacket(t.fromTun)).third
-            assertEquals(0x1C, pongData[0].toInt() and 0xFF)
-            val pongParts = pongData.copyOfRange(33, pongData.size).toString(Charsets.UTF_8).split(";")
-            assertEquals("2193", pongParts[2])
-            assertEquals("1.26.50", pongParts[3])
+            Thread.sleep(2000)
+            assertEquals(0, t.fromTun.available())
             t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, openReq1()))
             t.toTun.flush()
             assertEquals(0x06, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
