@@ -377,6 +377,24 @@ class TunCore(
         return (dst[0].toInt() and 0xFF) == 0xFF
     }
 
+    private val RAKNET_MAGIC = byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x12, 0x34, 0x56, 0x78)
+
+    private fun hasMagicAt(payload: ByteArray, off: Int): Boolean {
+        if (payload.size < off + 16) return false
+        for (i in RAKNET_MAGIC.indices) if (payload[off + i] != RAKNET_MAGIC[i]) return false
+        return true
+    }
+
+    private fun isRakNet(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return false
+        return when (payload[0].toInt() and 0xFF) {
+            0x01, 0x02 -> hasMagicAt(payload, 9)
+            0x05, 0x06, 0x07, 0x08 -> hasMagicAt(payload, 1)
+            0x00, 0x03, 0x04, 0xA0, 0xC0, in 0x80..0x8F -> true
+            else -> false
+        }
+    }
+
     private fun ipStr(v6: Boolean, b: ByteArray): String = InetAddress.getByAddress(b).hostAddress
 
     private fun addrBytes(s: String): ByteArray = InetAddress.getByName(s).address
@@ -392,7 +410,7 @@ class TunCore(
         val dport = getU16(udp, 2)
         val payload = udp.copyOfRange(8, udp.size)
         val id = FlowId(v6, ipStr(v6, src), sport, ipStr(v6, dst), dport, IpProto.UDP)
-        if (dport != 53 && !isBroadcastOrMulticast(v6, dst)) {
+        if (dport in gamePorts || (dport != 53 && !isBroadcastOrMulticast(v6, dst) && isRakNet(payload))) {
             handleGameUdp(id, v6, src, dst, sport, dport, payload)
             return
         }
