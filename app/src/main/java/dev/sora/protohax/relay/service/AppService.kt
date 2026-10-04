@@ -119,18 +119,31 @@ class AppService : VpnService() {
         this.vpnDescriptor = vpnDescriptor
         dev.sora.protohax.util.SvcJournal.mark("vpn.established")
 
-        val tun = TUN().apply {
-            fileDescriber = vpnDescriptor.fd
-            mtu = VPN_MTU
-            iPv6Config = when {
-                hasIPv4 && hasIPv6 -> Libmitm.IPv6Enable
-                hasIPv4 -> Libmitm.IPv6Disable
-                hasIPv6 -> Libmitm.IPv6Only
-                else -> error("invalid state")
+        dev.sora.protohax.util.SvcJournal.mark("tun.build-try")
+        val tun = try {
+            TUN().apply {
+                fileDescriber = vpnDescriptor.fd
+                mtu = VPN_MTU
+                iPv6Config = when {
+                    hasIPv4 && hasIPv6 -> Libmitm.IPv6Enable
+                    hasIPv4 -> Libmitm.IPv6Disable
+                    hasIPv6 -> Libmitm.IPv6Only
+                    else -> error("invalid state")
+                }
             }
+        } catch (t: Throwable) {
+            reportTunFailure("tun.build-fail", t)
+            return
         }
+        tun.logger = { dev.sora.protohax.util.SvcJournal.mark(it) }
         this.tun = tun
-        tun.start()
+        dev.sora.protohax.util.SvcJournal.mark("tun.built")
+        try {
+            tun.start()
+        } catch (t: Throwable) {
+            reportTunFailure("tun.start-fail", t)
+            return
+        }
         dev.sora.protohax.util.SvcJournal.mark("tun.started")
         logInfo("netstack started")
         isActive = true
@@ -141,6 +154,18 @@ class AppService : VpnService() {
         } catch (t: Throwable) {
             logError("start callback", t)
         }
+    }
+
+    private fun reportTunFailure(step: String, t: Throwable) {
+        dev.sora.protohax.util.SvcJournal.mark(step + " " + t.javaClass.simpleName + ": " + (t.message ?: "null"))
+        try {
+            val sw = java.io.StringWriter()
+            t.printStackTrace(java.io.PrintWriter(sw))
+            val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+            java.io.File(filesDir, "crash.log").appendText(stamp + " tun-failure\n" + sw.toString() + "\n")
+        } catch (_: Throwable) {
+        }
+        logError("tun", t)
     }
 
     private fun stopVPN() {
