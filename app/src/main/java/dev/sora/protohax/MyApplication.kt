@@ -12,6 +12,8 @@ class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         installCrashRecorder()
+        dev.sora.protohax.util.SvcJournal.dir = filesDir
+        dev.sora.protohax.util.SvcJournal.mark("app.onCreate")
 
 		InternalLoggerFactory.setDefaultFactory(NettyLoggerFactory())
 
