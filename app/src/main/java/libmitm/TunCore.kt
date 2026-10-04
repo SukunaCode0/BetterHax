@@ -234,6 +234,9 @@ class TunCore(
     private val gameInBytes = AtomicLong(0)
     private val gameOutPkts = AtomicLong(0)
     private val gameOutBytes = AtomicLong(0)
+    private val writeErrs = AtomicLong(0)
+    @Volatile private var firstWriteErr: String? = null
+    private val tcpHandshakes = AtomicLong(0)
 
     private data class UdpFlow(val socket: DatagramSocket, var lastSeen: Long, val id: FlowId)
     private val udpFlows = ConcurrentHashMap<FlowId, UdpFlow>()
@@ -317,7 +320,11 @@ class TunCore(
             try {
                 tunOutput.write(pkt)
                 tunOutput.flush()
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                writeErrs.incrementAndGet()
+                if (firstWriteErr == null) {
+                    firstWriteErr = t.javaClass.simpleName + ":" + t.message
+                }
             }
         }
     }
@@ -508,6 +515,10 @@ class TunCore(
         }
     }
 
+    fun flowLabel(id: FlowId): String {
+        return id.dstIp + ":" + id.dstPort + (if (id.v6) "6" else "4")
+    }
+
     private fun handleGameUdp(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
         gameInPkts.incrementAndGet()
         gameInBytes.addAndGet(payload.size.toLong())
@@ -607,6 +618,7 @@ class TunCore(
             if ((flags and TcpFlag.ACK) != 0 && conn.state == 1 && ack == conn.sndNxt) {
                 conn.state = 2
                 conn.sndUna = ack
+                tcpHandshakes.incrementAndGet()
             } else if ((flags and TcpFlag.ACK) != 0) {
                 advanceAck(conn, ack)
             }
@@ -822,8 +834,8 @@ class TunCore(
                         pout += f.session.payloadsOut
                     }
                     try {
-                        val det = gameFlows.values.take(4).joinToString(" ") { it.id.dstPort.toString() + ":" + it.session.idSummary() }
-                        logger?.invoke("rakdetail " + det)
+                        val det = gameFlows.values.take(4).joinToString(" ") { flowLabel(it.id) + ":" + it.session.idSummary() }
+                        logger?.invoke("rakdetail " + det + " werr=" + writeErrs.get() + (if (firstWriteErr != null) ":" + firstWriteErr else "") + " tcphs=" + tcpHandshakes.get())
                     } catch (_: Throwable) {
                     }
                     logger?.invoke("rakstat flows=" + gameFlows.size + " udp=" + udpFlows.size + " tcp=" + tcpConns.size +
