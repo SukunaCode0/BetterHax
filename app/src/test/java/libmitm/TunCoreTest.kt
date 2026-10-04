@@ -77,33 +77,88 @@ class TunCoreTest {
         assertEquals(0, ipChecksum(hdr, 0, hdr.size))
     }
 
+    private fun rakMagic(): ByteArray {
+        return byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x12, 0x34, 0x56, 0x78)
+    }
+
+    private fun openReq1(): ByteArray {
+        val b = ByteArray(1 + 16 + 1 + 100)
+        b[0] = 0x05
+        System.arraycopy(rakMagic(), 0, b, 1, 16)
+        return b
+    }
+
+    private fun openReq2(): ByteArray {
+        val b = ByteArray(1 + 16 + 8 + 8)
+        b[0] = 0x07
+        System.arraycopy(rakMagic(), 0, b, 1, 16)
+        return b
+    }
+
+    private fun connectedDatagram(seq: Int, payload: ByteArray): ByteArray {
+        val frame = ByteArray(1 + 2 + 3 + 4 + payload.size)
+        frame[0] = 0x60
+        val bits = payload.size * 8
+        frame[1] = ((bits ushr 8) and 0xFF).toByte()
+        frame[2] = (bits and 0xFF).toByte()
+        frame[9] = 0
+        System.arraycopy(payload, 0, frame, 10, payload.size)
+        val dg = ByteArray(4 + frame.size)
+        dg[0] = 0x84.toByte()
+        dg[1] = (seq and 0xFF).toByte()
+        dg[2] = ((seq ushr 8) and 0xFF).toByte()
+        dg[3] = ((seq ushr 16) and 0xFF).toByte()
+        System.arraycopy(frame, 0, dg, 4, frame.size)
+        return dg
+    }
+
+    private fun readDatagramFromTun(`in`: PipedInputStream): ByteArray {
+        val deadline = System.currentTimeMillis() + 8000
+        while (System.currentTimeMillis() < deadline) {
+            val triple = parseUdpFromTun(readTunPacket(`in`))
+            val id = triple.third[0].toInt() and 0xFF
+            if (id in 0x80..0x8F) return triple.third
+        }
+        throw AssertionError("timed out waiting for raknet datagram")
+    }
+
+    private fun datagramPayload(dg: ByteArray): ByteArray {
+        var pos = 4
+        pos += 1
+        val bitLen = ((dg[pos].toInt() and 0xFF) shl 8) or (dg[pos + 1].toInt() and 0xFF)
+        pos += 2 + 3 + 4
+        return dg.copyOfRange(pos, pos + (bitLen + 7) / 8)
+    }
+
     @Test(timeout = 60000)
     fun gameUdpInterceptAndRewrite() {
         val t = newTun()
         try {
-            val payload = "raknet-hello".toByteArray()
-            t.toTun.write(gameUdp("10.13.37.2", 5000, "1.2.3.4", 19132, payload))
+            t.toTun.write(gameUdp("10.13.37.2", 5000, "1.2.3.4", 19132, openReq1()))
             t.toTun.flush()
+            assertEquals(0x06, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
+            t.toTun.write(gameUdp("10.13.37.2", 5000, "1.2.3.4", 19132, openReq2()))
+            t.toTun.flush()
+            assertEquals(0x08, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
             val conn = Libmitm.pollConnection() ?: throw AssertionError("no connection offered")
             assertEquals("1.2.3.4", conn.localAddr)
             assertEquals(19132L, conn.localPort)
             assertEquals("10.13.37.2", conn.remoteAddr)
             assertEquals(5000L, conn.remotePort)
             assertEquals(11L, conn.version)
+            val payload = "raknet-hello".toByteArray()
+            t.toTun.write(gameUdp("10.13.37.2", 5000, "1.2.3.4", 19132, connectedDatagram(0, payload)))
+            t.toTun.flush()
             assertArrayEquals(payload, conn.read())
             conn.write("raknet-world".toByteArray())
-            val out = readTunPacket(t.fromTun)
-            val (route, sport, data) = parseUdpFromTun(out)
-            assertEquals("1.2.3.4:19132->10.13.37.2:5000", route)
-            assertEquals(19132, sport)
-            assertArrayEquals("raknet-world".toByteArray(), data)
+            assertArrayEquals("raknet-world".toByteArray(), datagramPayload(readDatagramFromTun(t.fromTun)))
             conn.close()
         } finally {
             t.core.close()
         }
     }
 
-    @Test(timeout = 60000)
+@Test(timeout = 60000)
     fun udpPassthrough() {
         val echo = DatagramSocket(0)
         val echoPort = echo.localPort
@@ -137,12 +192,18 @@ class TunCoreTest {
     fun customPortRakNetSniffIntercept() {
         val t = newTun()
         try {
-            val magic = byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x12, 0x34, 0x56, 0x78)
             val ping = ByteArray(1 + 8 + 16 + 8)
             ping[0] = 0x01
-            System.arraycopy(magic, 0, ping, 9, 16)
+            System.arraycopy(rakMagic(), 0, ping, 9, 16)
             t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, ping))
             t.toTun.flush()
+            assertEquals(0x1C, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
+            t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, openReq1()))
+            t.toTun.flush()
+            assertEquals(0x06, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
+            t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, openReq2()))
+            t.toTun.flush()
+            assertEquals(0x08, parseUdpFromTun(readTunPacket(t.fromTun)).third[0].toInt() and 0xFF)
             val conn = Libmitm.pollConnection() ?: throw AssertionError("custom-port raknet not intercepted")
             assertEquals("9.9.9.9", conn.localAddr)
             assertEquals(22222L, conn.localPort)
@@ -152,7 +213,7 @@ class TunCoreTest {
         }
     }
 
-    @Test(timeout = 60000)
+@Test(timeout = 60000)
     fun tcpRelayHandshakeAndData() {
         val server = ServerSocket(0)
         val port = server.localPort
