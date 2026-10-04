@@ -60,8 +60,13 @@ class AppService : VpnService() {
         val action = intent.action
         try {
             if (ACTION_START == action) {
-                startVPN()
                 startForeground(1, createNotification())
+                try {
+                    startVPN()
+                } catch (t: Throwable) {
+                    logError("startVPN", t)
+                }
+                if (!isActive) stopSelf()
             } else {
                 stopVPN()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -98,7 +103,15 @@ class AppService : VpnService() {
             builder.addRoute("::", 0)
         }
 
-        val vpnDescriptor = builder.establish() ?: return
+        val vpnDescriptor = try {
+            builder.establish()
+        } catch (t: Throwable) {
+            logError("vpn establish", t)
+            null
+        } ?: run {
+            logError("vpn establish returned null (permission revoked or another VPN active?)")
+            return
+        }
         this.vpnDescriptor = vpnDescriptor
 
         val tun = TUN().apply {
