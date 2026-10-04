@@ -419,7 +419,7 @@ class TunCore(
         val dport = getU16(udp, 2)
         val payload = udp.copyOfRange(8, udp.size)
         val id = FlowId(v6, ipStr(v6, src), sport, ipStr(v6, dst), dport, IpProto.UDP)
-        if (dport in gamePorts || (dport != 53 && !isBroadcastOrMulticast(v6, dst) && isRakNet(payload))) {
+        if (dport != 53 && dport != 443 && (dport in gamePorts || (!isBroadcastOrMulticast(v6, dst) && isRakNet(payload)))) {
             handleGameUdp(id, v6, src, dst, sport, dport, payload)
             return
         }
