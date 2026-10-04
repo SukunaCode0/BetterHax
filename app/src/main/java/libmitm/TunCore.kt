@@ -228,7 +228,7 @@ class TunCore(
 
     private data class GameFlow(val session: RakServerSession, var lastSeen: Long, val id: FlowId)
     private val gameFlows = ConcurrentHashMap<FlowId, GameFlow>()
-    private val rakServerGuid = Random.nextLong()
+    private val rakServerGuid = Random.nextLong() and Long.MAX_VALUE
     var logger: ((String) -> Unit)? = null
     private val gameInPkts = AtomicLong(0)
     private val gameInBytes = AtomicLong(0)
@@ -240,7 +240,7 @@ class TunCore(
     private val pingFwd = AtomicLong(0)
     private val pongReal = AtomicLong(0)
     @Volatile private var pingSock: DatagramSocket? = null
-    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long)
+    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String)
     private val pingTargets = ConcurrentHashMap<String, PingTarget>()
     private val iface4: ByteArray by lazy { InetAddress.getByName("10.13.37.1").address }
     private val iface6: ByteArray by lazy { InetAddress.getByName("1337::1").address }
@@ -556,7 +556,7 @@ class TunCore(
                     gameOutPkts.incrementAndGet()
                     gameOutBytes.addAndGet(bytes.size.toLong())
                     writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
-                    try {
+                    if (!Libmitm.hasReal(id.dstIp + ":" + id.dstPort)) try {
                         val ia = ifaceAddr(v6)
                         val udp2 = buildUdp(dport, sport, bytes, ia, srcCopy, v6)
                         writeTun(wrap(v6, ia, srcCopy, IpProto.UDP, udp2))
@@ -822,6 +822,10 @@ class TunCore(
                     try {
                         val ns = DatagramSocket()
                         try {
+                            ns.broadcast = true
+                        } catch (_: Throwable) {
+                        }
+                        try {
                             udpProtector?.invoke(ns)
                         } catch (_: Throwable) {
                         }
@@ -842,7 +846,7 @@ class TunCore(
         try {
             val sock = getPingSock() ?: return
             if (pingTargets.size > 256) pingTargets.clear()
-            pingTargets[id.dstIp + ":" + id.dstPort] = PingTarget(src.copyOf(), sport, System.currentTimeMillis())
+            pingTargets[id.dstIp + ":" + id.dstPort] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), id.dstIp + ":" + id.dstPort)
             sock.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(dst), dport))
             pingFwd.incrementAndGet()
         } catch (_: Throwable) {
@@ -860,20 +864,21 @@ class TunCore(
             }
             if (p.length < 1 || (p.data[0].toInt() and 0xFF) != 0x1C) continue
             try {
-                val key = p.address.hostAddress + ":" + p.port
-                val tg = pingTargets[key] ?: continue
-                if (System.currentTimeMillis() - tg.at > 3000) {
-                    pingTargets.remove(key)
-                    continue
-                }
+                val rip = p.address.hostAddress
+                val tg0: PingTarget? = pingTargets[rip + ":" + p.port]
+                    ?: pingTargets.entries.firstOrNull { it.key.startsWith(rip + ":") && System.currentTimeMillis() - it.value.at < 3000 }?.value
+                val tgv = tg0 ?: continue
+                if (System.currentTimeMillis() - tgv.at > 3000) continue
+                Libmitm.markReal(tgv.serverKey)
+                Libmitm.markReal(rip + ":" + p.port)
                 val data = p.data.copyOfRange(0, p.length)
-                val udp = buildUdp(p.port, tg.clientPort, data, p.address.address, tg.clientIp, false)
+                val udp = buildUdp(p.port, tgv.clientPort, data, p.address.address, tgv.clientIp, false)
                 pongReal.incrementAndGet()
-                writeTun(buildIPv4(p.address.address, tg.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+                writeTun(buildIPv4(p.address.address, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
                 try {
                     val ia = ifaceAddr(false)
-                    val udp2 = buildUdp(p.port, tg.clientPort, data, ia, tg.clientIp, false)
-                    writeTun(buildIPv4(ia, tg.clientIp, IpProto.UDP, udp2, ipId.getAndIncrement()))
+                    val udp2 = buildUdp(p.port, tgv.clientPort, data, ia, tgv.clientIp, false)
+                    writeTun(buildIPv4(ia, tgv.clientIp, IpProto.UDP, udp2, ipId.getAndIncrement()))
                 } catch (_: Throwable) {
                 }
             } catch (_: Throwable) {
