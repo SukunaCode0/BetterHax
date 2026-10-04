@@ -148,8 +148,14 @@ class AppService : VpnService() {
             return
         }
         dev.sora.protohax.util.SvcJournal.mark("tun.fd-ok")
+        val outFd = try {
+            android.system.Os.dup(vpnFd)
+        } catch (_: Throwable) {
+            null
+        }
+        dev.sora.protohax.util.SvcJournal.mark("tun.dup-ok=" + (outFd != null))
         val tun = try {
-            TUN(java.io.FileInputStream(vpnFd), java.io.FileOutputStream(vpnFd)).apply {
+            TUN(java.io.FileInputStream(vpnFd), java.io.FileOutputStream(outFd ?: vpnFd)).apply {
                 mtu = VPN_MTU
             }
         } catch (t: Throwable) {
