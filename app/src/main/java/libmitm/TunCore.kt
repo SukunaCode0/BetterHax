@@ -546,6 +546,9 @@ class TunCore(
             val dstCopy = dst.copyOf()
             var sess: RakServerSession? = null
             sess = RakServerSession(conn, rakServerGuid, 1400, srcCopy, sport) { bytes ->
+                if (bytes.isNotEmpty() && (bytes[0].toInt() and 0xFF) == 0x08) {
+                    try { logger?.invoke("relay.offer " + id.dstIp + ":" + id.dstPort + " from=" + id.srcIp + ":" + id.srcPort) } catch (_: Throwable) { }
+                }
                 val f = gameFlows[id]
                 if (f != null) {
                     f.lastSeen = System.currentTimeMillis()
@@ -576,7 +579,7 @@ class TunCore(
             }
             flow = GameFlow(sess, System.currentTimeMillis(), id)
             gameFlows[id] = flow
-            try { logger?.invoke("game.open " + flowLabel(id) + " id=" + (payload[0].toInt() and 0xFF)) } catch (_: Throwable) { }
+            try { val hx = payload.take(16).joinToString("") { "%02x".format(it) }; logger?.invoke("game.open " + flowLabel(id) + " src=" + id.srcIp + ":" + id.srcPort + " id=" + (payload[0].toInt() and 0xFF) + " hex=" + hx) } catch (_: Throwable) { }
         }
         flow.lastSeen = System.currentTimeMillis()
         try {
