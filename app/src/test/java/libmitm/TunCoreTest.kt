@@ -134,6 +134,25 @@ class TunCoreTest {
     }
 
     @Test(timeout = 60000)
+    fun customPortRakNetSniffIntercept() {
+        val t = newTun()
+        try {
+            val magic = byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x12, 0x34, 0x56, 0x78)
+            val ping = ByteArray(1 + 8 + 16 + 8)
+            ping[0] = 0x01
+            System.arraycopy(magic, 0, ping, 9, 16)
+            t.toTun.write(gameUdp("10.13.37.2", 5001, "9.9.9.9", 22222, ping))
+            t.toTun.flush()
+            val conn = Libmitm.pollConnection() ?: throw AssertionError("custom-port raknet not intercepted")
+            assertEquals("9.9.9.9", conn.localAddr)
+            assertEquals(22222L, conn.localPort)
+            conn.close()
+        } finally {
+            t.core.close()
+        }
+    }
+
+    @Test(timeout = 60000)
     fun tcpRelayHandshakeAndData() {
         val server = ServerSocket(0)
         val port = server.localPort
