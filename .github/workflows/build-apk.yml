@@ -1,4 +1,4 @@
-name: Build BetterHax APK (1.26.50)
+name: Build ProtoHax APK (1.26.50)
 
 on:
   workflow_dispatch:
@@ -52,5 +52,5 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: BetterHax-1.26.50-apk
+          name: ProtoHax-1.26.50-apk
           path: app/build/outputs/apk/debug/*.apk
