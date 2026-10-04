@@ -1,8 +1,8 @@
-# ProtoHax-Android
+# BetterHax (1.26.50)
 
 <img align="right" width="159px" src="https://raw.githubusercontent.com/hax0r31337/ProtoHax/stable/icon.png">
 
-> **Notice:** ProtoHax has been rewritten as a closed-source recode, now available at **[protohax.net](https://protohax.net)**. This repository is kept for reservation purposes only and is no longer actively maintained.
+> **Notice:** This is BetterHax, a Modified version of Protohax-Android (1.20), but, BetterHax supports latest minecraft version, Official Protohax is at:**[protohax.net](https://protohax.net)**.
 
 ProtoHax-Android is the Android implementation of [ProtoHax](https://github.com/hax0r31337/ProtoHax), an open-source cheat for Minecraft: Bedrock Edition that works through the network layer. This repository contains the Android-specific code for the cheat.
 
