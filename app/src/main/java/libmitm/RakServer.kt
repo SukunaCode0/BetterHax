@@ -69,6 +69,10 @@ class RakServerSession(
     private data class SplitBuf(val count: Int, val parts: Array<ByteArray?>, var arrived: Int, var updatedAt: Long)
     private val splits = HashMap<Int, SplitBuf>()
 
+    val idCounts = java.util.concurrent.ConcurrentHashMap<Int, java.util.concurrent.atomic.AtomicLong>()
+    var pings = 0L
+    var open1 = 0L
+    var open2 = 0L
     var datagramsIn = 0L
     var datagramsOut = 0L
     var payloadsIn = 0L
@@ -81,6 +85,10 @@ class RakServerSession(
     fun handleIncoming(d: ByteArray) {
         if (d.isEmpty() || closed) return
         lastActivity = System.currentTimeMillis()
+        try {
+            idCounts.computeIfAbsent(d[0].toInt() and 0xFF) { java.util.concurrent.atomic.AtomicLong() }.incrementAndGet()
+        } catch (_: Throwable) {
+        }
         when (d[0].toInt() and 0xFF) {
             0x01, 0x02 -> handlePing(d)
             0x05 -> handleOpen1(d)
@@ -103,6 +111,7 @@ class RakServerSession(
     }
 
     private fun handlePing(d: ByteArray) {
+        pings++
         if (d.size < 1 + 8 + 16) return
         val time = getU64Be(d, 1)
         val pongStr = ("MCPE;BetterHax Relay;748;1.26.50;0;20;" + serverGuid +
@@ -117,6 +126,7 @@ class RakServerSession(
     }
 
     private fun handleOpen1(d: ByteArray) {
+        open1++
         if (d.size < 1 + 16 + 1) return
         val clientMtu = (d.size + 28).coerceIn(400, 1500)
         val serverMtu = minOf(clientMtu, mtu)
@@ -130,6 +140,7 @@ class RakServerSession(
     }
 
     private fun handleOpen2(d: ByteArray) {
+        open2++
         if (d.size < 1 + 16 + 8) return
         val out = ByteArray(1 + 16 + 8 + 7 + 2 + 1)
         out[0] = 0x08.toByte()
@@ -425,6 +436,15 @@ class RakServerSession(
             while (si.hasNext()) {
                 if (now - si.next().value.updatedAt > 10000) si.remove()
             }
+        }
+    }
+
+    fun idSummary(): String {
+        return try {
+            idCounts.entries.sortedBy { it.key }.joinToString(",") { it.key.toString(16) + "=" + it.value.get() } +
+                " ping=" + pings + " o1=" + open1 + " o2=" + open2 + " off=" + (if (offered) 1 else 0)
+        } catch (_: Throwable) {
+            "?"
         }
     }
 
