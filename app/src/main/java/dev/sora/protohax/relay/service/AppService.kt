@@ -172,8 +172,15 @@ class AppService : VpnService() {
         isActive = true
         try {
 			MinecraftRelay.announceRelayUp()
-            serviceListeners.forEach { it.onServiceStarted() }
-            dev.sora.protohax.util.SvcJournal.mark("relay.up isActive=" + isActive)
+            dev.sora.protohax.util.SvcJournal.mark("relay.announced")
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try {
+                    serviceListeners.forEach { it.onServiceStarted() }
+                    dev.sora.protohax.util.SvcJournal.mark("relay.up isActive=" + isActive)
+                } catch (t: Throwable) {
+                    logError("start callback", t)
+                }
+            }
         } catch (t: Throwable) {
             logError("start callback", t)
         }
