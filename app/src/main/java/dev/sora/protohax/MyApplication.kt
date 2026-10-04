@@ -27,6 +27,9 @@ class MyApplication : Application() {
         val prev = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, error ->
             try {
+                dev.sora.protohax.util.SvcJournal.mark("crash thread=" + thread.name + " " + error.javaClass.simpleName + ": " + (error.message ?: "null"))
+            } catch (_: Throwable) { }
+            try {
                 val sw = java.io.StringWriter()
                 error.printStackTrace(java.io.PrintWriter(sw))
                 val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
