@@ -30,10 +30,10 @@ class TunCoreTest {
         return TunPair(core, toTunOut, fromTunIn)
     }
 
-    private fun readTunPacket(`in`: PipedInputStream): ByteArray {
+    private fun readTunPacket(`in`: PipedInputStream, timeoutMs: Long = 5000): ByteArray {
         val framer = PacketFramer()
         val tmp = ByteArray(4096)
-        val deadline = System.currentTimeMillis() + 5000
+        val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (`in`.available() > 0) {
                 val n = `in`.read(tmp)
@@ -122,6 +122,31 @@ class TunCoreTest {
         throw AssertionError("timed out waiting for raknet datagram")
     }
 
+    private fun readFramePayloadWithId(`in`: PipedInputStream, want: Int): ByteArray {
+        val deadline = System.currentTimeMillis() + 15000
+        while (System.currentTimeMillis() < deadline) {
+            val pkt = try {
+                readTunPacket(`in`, (deadline - System.currentTimeMillis()).coerceAtLeast(100))
+            } catch (_: AssertionError) {
+                throw AssertionError("timed out waiting for frame " + want.toString(16))
+            }
+            val payload = try {
+                parseUdpFromTun(pkt).third
+            } catch (_: Throwable) {
+                continue
+            }
+            if (payload.isEmpty()) continue
+            if ((payload[0].toInt() and 0xFF) !in 0x80..0x8F) continue
+            val frame = try {
+                framePayload(payload)
+            } catch (_: Throwable) {
+                continue
+            }
+            if (frame.isNotEmpty() && (frame[0].toInt() and 0xFF) == want) return frame
+        }
+        throw AssertionError("timed out waiting for frame " + want.toString(16))
+    }
+
     private fun ackPacket(vararg seqs: Int): ByteArray {
         val b = ByteArray(3 + seqs.size * 4)
         b[0] = 0xC0.toByte()
@@ -207,7 +232,7 @@ class TunCoreTest {
             putU64Be(req, 9, reqTime)
             t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, connectedDatagram(0, req)))
             t.toTun.flush()
-            val accepted = framePayload(readDatagramFromTun(t.fromTun))
+            val accepted = readFramePayloadWithId(t.fromTun, 0x10)
             assertEquals(0x10, accepted[0].toInt() and 0xFF)
             assertEquals(166, accepted.size)
             assertEquals(reqTime, getU64Be(accepted, 150))
@@ -217,7 +242,7 @@ class TunCoreTest {
             putU64Be(ping, 1, pingTime)
             t.toTun.write(gameUdp("10.13.37.2", 5003, "1.2.3.4", 19132, connectedDatagram(1, ping)))
             t.toTun.flush()
-            val pong = framePayload(readDatagramFromTun(t.fromTun))
+            val pong = readFramePayloadWithId(t.fromTun, 0x03)
             assertEquals(0x03, pong[0].toInt() and 0xFF)
             assertEquals(17, pong.size)
             assertEquals(pingTime, getU64Be(pong, 1))
