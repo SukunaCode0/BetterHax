@@ -237,6 +237,11 @@ class TunCore(
     private val writeErrs = AtomicLong(0)
     @Volatile private var firstWriteErr: String? = null
     private val tcpHandshakes = AtomicLong(0)
+    private val pingFwd = AtomicLong(0)
+    private val pongReal = AtomicLong(0)
+    @Volatile private var pingSock: DatagramSocket? = null
+    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long)
+    private val pingTargets = ConcurrentHashMap<String, PingTarget>()
     private val ipInPkts = AtomicLong(0)
 
     private data class UdpFlow(val socket: DatagramSocket, var lastSeen: Long, val id: FlowId)
@@ -291,6 +296,11 @@ class TunCore(
             }
         }
         udpFlows.clear()
+        try {
+            pingSock?.close()
+        } catch (_: Throwable) {
+        }
+        pingSock = null
         tcpConns.values.forEach { killTcp(it) }
         tcpConns.clear()
     }
@@ -524,6 +534,7 @@ class TunCore(
     private fun handleGameUdp(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
         gameInPkts.incrementAndGet()
         gameInBytes.addAndGet(payload.size.toLong())
+        if (payload.isNotEmpty() && (payload[0].toInt() and 0xFF) == 0x01) forwardPing(id, v6, src, dst, sport, dport, payload)
         var flow = gameFlows[id]
         if (flow == null) {
             pruneGameFlows()
@@ -790,6 +801,68 @@ class TunCore(
         tcpConns.remove(conn.id)
     }
 
+    private fun getPingSock(): DatagramSocket? {
+        var s = pingSock
+        if (s == null) {
+            synchronized(this) {
+                s = pingSock
+                if (s == null) {
+                    try {
+                        val ns = DatagramSocket()
+                        try {
+                            udpProtector?.invoke(ns)
+                        } catch (_: Throwable) {
+                        }
+                        pingSock = ns
+                        s = ns
+                        spawn("ping-relay") { pingRelayLoop(ns) }
+                    } catch (_: Throwable) {
+                        return null
+                    }
+                }
+            }
+        }
+        return s
+    }
+
+    private fun forwardPing(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
+        if (v6) return
+        try {
+            val sock = getPingSock() ?: return
+            if (pingTargets.size > 256) pingTargets.clear()
+            pingTargets[id.dstIp + ":" + id.dstPort] = PingTarget(src.copyOf(), sport, System.currentTimeMillis())
+            sock.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(dst), dport))
+            pingFwd.incrementAndGet()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun pingRelayLoop(sock: DatagramSocket) {
+        val buf = ByteArray(2048)
+        while (running.get()) {
+            val p = DatagramPacket(buf, buf.size)
+            try {
+                sock.receive(p)
+            } catch (_: Throwable) {
+                return
+            }
+            if (p.length < 1 || (p.data[0].toInt() and 0xFF) != 0x1C) continue
+            try {
+                val key = p.address.hostAddress + ":" + p.port
+                val tg = pingTargets[key] ?: continue
+                if (System.currentTimeMillis() - tg.at > 3000) {
+                    pingTargets.remove(key)
+                    continue
+                }
+                val data = p.data.copyOfRange(0, p.length)
+                val udp = buildUdp(p.port, tg.clientPort, data, p.address.address, tg.clientIp, false)
+                pongReal.incrementAndGet()
+                writeTun(buildIPv4(p.address.address, tg.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     private fun sweeperLoop() {
         var tick = 0
         while (running.get()) {
@@ -845,7 +918,8 @@ class TunCore(
                         " ipin=" + ipInPkts.get() +
                         " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
                         " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
-                        " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout)
+                        " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout +
+                        " pfwd=" + pingFwd.get() + " preal=" + pongReal.get())
                 } catch (_: Throwable) {
                 }
             }
