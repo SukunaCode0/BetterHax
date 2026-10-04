@@ -113,14 +113,22 @@ class LogActivity : ComponentActivity() {
 		} catch (_: Throwable) { "" }
 	}
 
+	private fun readServiceLog(): String {
+		return try {
+			val f = java.io.File(filesDir, "service.log")
+			if (f.exists()) "===== SERVICE JOURNAL =====\n" + f.readText().takeLast(6000) + "\n" else ""
+		} catch (_: Throwable) { "" }
+	}
+
 	private fun CoroutineScope.refreshLogs(text: MutableState<String>, flush: Boolean = false) {
 		launch {
 			if (flush) {
 				NettyLogger.clearLogs()
 			try { java.io.File(filesDir, "crash.log").delete() } catch (_: Throwable) { }
+			try { java.io.File(filesDir, "service.log").delete() } catch (_: Throwable) { }
 			}
 
-			text.value = readCrashLog() + NettyLogger.getLogs()
+			text.value = readServiceLog() + readCrashLog() + NettyLogger.getLogs()
 
 			if (text.value.isBlank()) {
 				text.value = "no logs currently"
