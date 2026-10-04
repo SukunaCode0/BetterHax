@@ -154,6 +154,18 @@ class AppService : VpnService() {
             null
         }
         dev.sora.protohax.util.SvcJournal.mark("tun.dup-ok=" + (outFd != null))
+        try {
+            val rp = StringBuilder()
+            for (f in arrayOf("/proc/sys/net/ipv4/conf/all/rp_filter", "/proc/sys/net/ipv4/conf/default/rp_filter", "/proc/sys/net/ipv4/conf/tun0/rp_filter")) {
+                try {
+                    rp.append(f.substringAfterLast("/") + "=" + java.io.File(f).readText().trim() + " ")
+                } catch (_: Throwable) {
+                    rp.append(f.substringAfterLast("/") + "=? ")
+                }
+            }
+            dev.sora.protohax.util.SvcJournal.mark("net.rp " + rp.toString().trim())
+        } catch (_: Throwable) {
+        }
         val tun = try {
             TUN(java.io.FileInputStream(vpnFd), java.io.FileOutputStream(outFd ?: vpnFd)).apply {
                 mtu = VPN_MTU
