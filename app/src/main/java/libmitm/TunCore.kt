@@ -556,12 +556,6 @@ class TunCore(
                     gameOutPkts.incrementAndGet()
                     gameOutBytes.addAndGet(bytes.size.toLong())
                     writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
-                    if (!Libmitm.hasReal(id.dstIp + ":" + id.dstPort)) try {
-                        val ia = ifaceAddr(v6)
-                        val udp2 = buildUdp(dport, sport, bytes, ia, srcCopy, v6)
-                        writeTun(wrap(v6, ia, srcCopy, IpProto.UDP, udp2))
-                    } catch (_: Throwable) {
-                    }
                 }
             }
             conn.onWrite = { bytes ->
@@ -875,12 +869,6 @@ class TunCore(
                 val udp = buildUdp(p.port, tgv.clientPort, data, p.address.address, tgv.clientIp, false)
                 pongReal.incrementAndGet()
                 writeTun(buildIPv4(p.address.address, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
-                try {
-                    val ia = ifaceAddr(false)
-                    val udp2 = buildUdp(p.port, tgv.clientPort, data, ia, tgv.clientIp, false)
-                    writeTun(buildIPv4(ia, tgv.clientIp, IpProto.UDP, udp2, ipId.getAndIncrement()))
-                } catch (_: Throwable) {
-                }
             } catch (_: Throwable) {
             }
         }
