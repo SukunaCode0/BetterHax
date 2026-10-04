@@ -12,6 +12,7 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 internal object IpProto {
@@ -225,8 +226,14 @@ class TunCore(
     private val threads = mutableListOf<Thread>()
     private val framer = PacketFramer()
 
-    private data class GameFlow(val conn: RakConn, var lastSeen: Long, val id: FlowId)
+    private data class GameFlow(val session: RakServerSession, var lastSeen: Long, val id: FlowId)
     private val gameFlows = ConcurrentHashMap<FlowId, GameFlow>()
+    private val rakServerGuid = Random.nextLong()
+    var logger: ((String) -> Unit)? = null
+    private val gameInPkts = AtomicLong(0)
+    private val gameInBytes = AtomicLong(0)
+    private val gameOutPkts = AtomicLong(0)
+    private val gameOutBytes = AtomicLong(0)
 
     private data class UdpFlow(val socket: DatagramSocket, var lastSeen: Long, val id: FlowId)
     private val udpFlows = ConcurrentHashMap<FlowId, UdpFlow>()
@@ -266,7 +273,12 @@ class TunCore(
         } catch (_: Throwable) {
         }
         synchronized(threads) { threads.toList() }.forEach { it.interrupt() }
-        gameFlows.values.forEach { it.conn.close() }
+        gameFlows.values.forEach {
+            try {
+                it.session.shutdown()
+            } catch (_: Throwable) {
+            }
+        }
         gameFlows.clear()
         udpFlows.values.forEach {
             try {
@@ -490,29 +502,53 @@ class TunCore(
         if (gameFlows.size <= 32) return
         val oldest = gameFlows.entries.minByOrNull { it.value.lastSeen } ?: return
         gameFlows.remove(oldest.key)
-        oldest.value.conn.close()
+        try {
+            oldest.value.session.shutdown()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun handleGameUdp(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
+        gameInPkts.incrementAndGet()
+        gameInBytes.addAndGet(payload.size.toLong())
         var flow = gameFlows[id]
         if (flow == null) {
             pruneGameFlows()
             val conn = RakConn(11L, id.dstIp, dport.toLong(), id.srcIp, sport.toLong())
-            val f = GameFlow(conn, System.currentTimeMillis(), id)
             val srcCopy = src.copyOf()
             val dstCopy = dst.copyOf()
-            conn.onWrite = { bytes ->
-                f.lastSeen = System.currentTimeMillis()
-                val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
-                writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+            var sess: RakServerSession? = null
+            sess = RakServerSession(conn, rakServerGuid, 1400, srcCopy, sport) { bytes ->
+                val f = gameFlows[id]
+                if (f != null) {
+                    f.lastSeen = System.currentTimeMillis()
+                    val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
+                    gameOutPkts.incrementAndGet()
+                    gameOutBytes.addAndGet(bytes.size.toLong())
+                    writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+                }
             }
-            conn.onClose = { gameFlows.remove(id) }
-            flow = f
-            gameFlows[id] = f
-            Libmitm.offer(conn)
+            conn.onWrite = { bytes ->
+                try {
+                    sess?.sendConnected(bytes)
+                } catch (_: Throwable) {
+                }
+            }
+            conn.onClose = {
+                try {
+                    sess?.shutdown()
+                } catch (_: Throwable) {
+                }
+                gameFlows.remove(id)
+            }
+            flow = GameFlow(sess, System.currentTimeMillis(), id)
+            gameFlows[id] = flow
         }
         flow.lastSeen = System.currentTimeMillis()
-        flow.conn.push(payload)
+        try {
+            flow.session.handleIncoming(payload)
+        } catch (_: Throwable) {
+        }
     }
 
     private fun handleTcp(v6: Boolean, src: ByteArray, dst: ByteArray, tcp: ByteArray) {
@@ -740,6 +776,7 @@ class TunCore(
     }
 
     private fun sweeperLoop() {
+        var tick = 0
         while (running.get()) {
             try {
                 Thread.sleep(500)
@@ -758,9 +795,38 @@ class TunCore(
             }
             gameFlows.entries.removeIf {
                 if (now - it.value.lastSeen > 600000) {
-                    it.value.conn.close()
+                    try {
+                        it.value.session.shutdown()
+                    } catch (_: Throwable) {
+                    }
                     true
                 } else false
+            }
+            for (f in gameFlows.values) {
+                try {
+                    f.session.tick(now)
+                } catch (_: Throwable) {
+                }
+            }
+            tick++
+            if (tick % 60 == 0) {
+                try {
+                    var din = 0L
+                    var dout = 0L
+                    var pin = 0L
+                    var pout = 0L
+                    for (f in gameFlows.values) {
+                        din += f.session.datagramsIn
+                        dout += f.session.datagramsOut
+                        pin += f.session.payloadsIn
+                        pout += f.session.payloadsOut
+                    }
+                    logger?.invoke("rakstat flows=" + gameFlows.size + " udp=" + udpFlows.size + " tcp=" + tcpConns.size +
+                        " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
+                        " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
+                        " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout)
+                } catch (_: Throwable) {
+                }
             }
             for (conn in tcpConns.values) {
                 var resetId: FlowId? = null
