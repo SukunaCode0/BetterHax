@@ -243,11 +243,21 @@ class TunCore(
     @Volatile private var pingSock: DatagramSocket? = null
     private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String, val pingTs: Long)
     private val pingTargets = ConcurrentHashMap<String, PingTarget>()
-    private val pingOutLogged = ConcurrentHashMap<String, Boolean>()
-    private val pongInLogged = ConcurrentHashMap<String, Boolean>()
-    private val pongHexKeys = ConcurrentHashMap<String, Boolean>()
+    private val pingOutLogged = ConcurrentHashMap<String, Long>()
+    private val pongInLogged = ConcurrentHashMap<String, Long>()
+    private val pongHexKeys = ConcurrentHashMap<String, Long>()
     private val pongNoMatch = AtomicLong(0)
     private val pingV6drop = AtomicLong(0)
+
+    private fun shouldLog(m: ConcurrentHashMap<String, Long>, key: String): Boolean {
+        val now = System.currentTimeMillis()
+        val last = m[key]
+        if (last == null || now - last > 30000) {
+            m[key] = now
+            return true
+        }
+        return false
+    }
     private val iface4: ByteArray by lazy { InetAddress.getByName("10.13.37.1").address }
     private val iface6: ByteArray by lazy { InetAddress.getByName("1337::1").address }
     private fun ifaceAddr(v6: Boolean): ByteArray = if (v6) iface6 else iface4
@@ -982,7 +992,7 @@ class TunCore(
             val key = id.dstIp + ":" + id.dstPort
             val pts = try { if (payload.size >= 9) getU64Be(payload, 1) else -1L } catch (_: Throwable) { -1L }
             pingTargets[key] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), key, pts)
-            if (pingOutLogged.putIfAbsent(key, true) == null) {
+            if (shouldLog(pingOutLogged, key)) {
                 val phex = try { payload.take(33).joinToString("") { "%02x".format(it) } } catch (_: Throwable) { "?" }
                 try { logger?.invoke("ping.out " + key + " ts=" + pts + " hex=" + phex) } catch (_: Throwable) { }
             }
@@ -1008,7 +1018,7 @@ class TunCore(
                 val tg0: PingTarget? = pingTargets[rip + ":" + p.port]
                     ?: pingTargets.entries.firstOrNull { it.key.startsWith(rip + ":") && nowMs - it.value.at < 3000 }?.value
                     ?: pingTargets.entries.filter { nowMs - it.value.at < 1500 }.maxByOrNull { it.value.at }?.let {
-                        if (pongInLogged.putIfAbsent(it.key + "|redir", true) == null) try { logger?.invoke("pong.redir " + it.key + " rip=" + rip + ":" + p.port) } catch (_: Throwable) { }
+                        if (shouldLog(pongInLogged, it.key + "|redir")) try { logger?.invoke("pong.redir " + it.key + " rip=" + rip + ":" + p.port) } catch (_: Throwable) { }
                         it.value
                     }
                 if (tg0 == null) {
@@ -1019,7 +1029,7 @@ class TunCore(
                 val tgv = tg0
                 if (nowMs - tgv.at > 3000) continue
                 val data = p.data.copyOfRange(0, p.length)
-                if (pongHexKeys.putIfAbsent(tgv.serverKey, true) == null) {
+                if (shouldLog(pongHexKeys, tgv.serverKey)) {
                     try {
                         val rts = if (data.size >= 9) getU64Be(data, 1) else -1L
                         val rguid = if (data.size >= 17) getU64Be(data, 9) else -1L
@@ -1035,7 +1045,7 @@ class TunCore(
                     } catch (_: Throwable) {
                     }
                 }
-                if (pongInLogged.putIfAbsent(tgv.serverKey, true) == null) {
+                if (shouldLog(pongInLogged, tgv.serverKey)) {
                     val motd = try {
                         if (data.size > 35) {
                             val mlen = getU16(data, 33)
