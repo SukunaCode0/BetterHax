@@ -12,6 +12,7 @@ import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
 
 internal object IpProto {
@@ -217,13 +218,34 @@ class TunCore(
     private val tunOutput: OutputStream,
     private val gamePorts: Set<Int> = setOf(19132, 19133)
 ) {
+    var udpProtector: ((DatagramSocket) -> Boolean)? = null
+    var tcpProtector: ((Socket) -> Boolean)? = null
+    private val errorLogCount = AtomicInteger(0)
     private val running = AtomicBoolean(false)
     private val ipId = AtomicInteger(Random.nextInt(65536))
     private val threads = mutableListOf<Thread>()
     private val framer = PacketFramer()
 
-    private data class GameFlow(val conn: RakConn, var lastSeen: Long, val id: FlowId)
+    private data class GameFlow(val session: RakServerSession, var lastSeen: Long, val id: FlowId)
     private val gameFlows = ConcurrentHashMap<FlowId, GameFlow>()
+    private val rakServerGuid = Random.nextLong() and Long.MAX_VALUE
+    var logger: ((String) -> Unit)? = null
+    private val gameInPkts = AtomicLong(0)
+    private val gameInBytes = AtomicLong(0)
+    private val gameOutPkts = AtomicLong(0)
+    private val gameOutBytes = AtomicLong(0)
+    private val writeErrs = AtomicLong(0)
+    @Volatile private var firstWriteErr: String? = null
+    private val tcpHandshakes = AtomicLong(0)
+    private val pingFwd = AtomicLong(0)
+    private val pongReal = AtomicLong(0)
+    @Volatile private var pingSock: DatagramSocket? = null
+    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String)
+    private val pingTargets = ConcurrentHashMap<String, PingTarget>()
+    private val iface4: ByteArray by lazy { InetAddress.getByName("10.13.37.1").address }
+    private val iface6: ByteArray by lazy { InetAddress.getByName("1337::1").address }
+    private fun ifaceAddr(v6: Boolean): ByteArray = if (v6) iface6 else iface4
+    private val ipInPkts = AtomicLong(0)
 
     private data class UdpFlow(val socket: DatagramSocket, var lastSeen: Long, val id: FlowId)
     private val udpFlows = ConcurrentHashMap<FlowId, UdpFlow>()
@@ -263,7 +285,12 @@ class TunCore(
         } catch (_: Throwable) {
         }
         synchronized(threads) { threads.toList() }.forEach { it.interrupt() }
-        gameFlows.values.forEach { it.conn.close() }
+        gameFlows.values.forEach {
+            try {
+                it.session.shutdown()
+            } catch (_: Throwable) {
+            }
+        }
         gameFlows.clear()
         udpFlows.values.forEach {
             try {
@@ -272,6 +299,11 @@ class TunCore(
             }
         }
         udpFlows.clear()
+        try {
+            pingSock?.close()
+        } catch (_: Throwable) {
+        }
+        pingSock = null
         tcpConns.values.forEach { killTcp(it) }
         tcpConns.clear()
     }
@@ -283,7 +315,12 @@ class TunCore(
             } catch (_: InterruptedException) {
             } catch (_: IOException) {
             } catch (t: Throwable) {
-                t.printStackTrace()
+                if (errorLogCount.getAndIncrement() < 8) {
+                    try {
+                        android.util.Log.e("TunCore", "thread died: " + t.javaClass.simpleName + ": " + t.message)
+                    } catch (_: Throwable) {
+                    }
+                }
             }
         }, "libmitm-$name")
         t.isDaemon = true
@@ -297,7 +334,11 @@ class TunCore(
             try {
                 tunOutput.write(pkt)
                 tunOutput.flush()
-            } catch (_: Throwable) {
+            } catch (t: Throwable) {
+                writeErrs.incrementAndGet()
+                if (firstWriteErr == null) {
+                    firstWriteErr = t.javaClass.simpleName + ":" + t.message
+                }
             }
         }
     }
@@ -318,6 +359,7 @@ class TunCore(
                 continue
             }
             for (p in packets) {
+                ipInPkts.incrementAndGet()
                 try {
                     handlePacket(p)
                 } catch (_: Throwable) {
@@ -366,6 +408,36 @@ class TunCore(
         }
     }
 
+    private fun isBroadcastOrMulticast(v6: Boolean, dst: ByteArray): Boolean {
+        if (!v6) {
+            if (dst.all { it == 255.toByte() }) return true
+            if ((dst[3].toInt() and 0xFF) == 255) return true
+            val first = dst[0].toInt() and 0xFF
+            if (first >= 224 && first <= 239) return true
+            return false
+        }
+        return (dst[0].toInt() and 0xFF) == 0xFF
+    }
+
+    private val RAKNET_MAGIC = byteArrayOf(0x00, 0xFF.toByte(), 0xFF.toByte(), 0x00, 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFE.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0xFD.toByte(), 0x12, 0x34, 0x56, 0x78)
+
+    private fun hasMagicAt(payload: ByteArray, off: Int): Boolean {
+        if (payload.size < off + 16) return false
+        for (i in RAKNET_MAGIC.indices) if (payload[off + i] != RAKNET_MAGIC[i]) return false
+        return true
+    }
+
+    private fun isRakNet(payload: ByteArray): Boolean {
+        if (payload.isEmpty()) return false
+        return when (payload[0].toInt() and 0xFF) {
+            0x01, 0x02 -> hasMagicAt(payload, 9)
+            0x05, 0x06, 0x07, 0x08 -> hasMagicAt(payload, 1)
+            0x00, 0x03, 0x04 -> hasMagicAt(payload, 1) || hasMagicAt(payload, 9)
+            0xA0, 0xC0, in 0x80..0x8F -> true
+            else -> false
+        }
+    }
+
     private fun ipStr(v6: Boolean, b: ByteArray): String = InetAddress.getByAddress(b).hostAddress
 
     private fun addrBytes(s: String): ByteArray = InetAddress.getByName(s).address
@@ -381,14 +453,20 @@ class TunCore(
         val dport = getU16(udp, 2)
         val payload = udp.copyOfRange(8, udp.size)
         val id = FlowId(v6, ipStr(v6, src), sport, ipStr(v6, dst), dport, IpProto.UDP)
-        if (dport in gamePorts) {
+        if (dport != 53 && dport != 443 && (dport in gamePorts || (!isBroadcastOrMulticast(v6, dst) && isRakNet(payload)))) {
             handleGameUdp(id, v6, src, dst, sport, dport, payload)
             return
         }
         var flow = udpFlows[id]
         if (flow == null) {
+            pruneUdpFlows()
             val sock = try {
-                DatagramSocket()
+                DatagramSocket().also { s ->
+                    try {
+                        udpProtector?.invoke(s)
+                    } catch (_: Throwable) {
+                    }
+                }
             } catch (_: Throwable) {
                 return
             }
@@ -432,32 +510,76 @@ class TunCore(
         }
     }
 
+    private fun pruneUdpFlows() {
+        if (udpFlows.size <= 64) return
+        val oldest = udpFlows.entries.minByOrNull { it.value.lastSeen } ?: return
+        udpFlows.remove(oldest.key)
+        try {
+            oldest.value.socket.close()
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun pruneGameFlows() {
         if (gameFlows.size <= 32) return
         val oldest = gameFlows.entries.minByOrNull { it.value.lastSeen } ?: return
         gameFlows.remove(oldest.key)
-        oldest.value.conn.close()
+        try {
+            oldest.value.session.shutdown()
+        } catch (_: Throwable) {
+        }
+    }
+
+    internal fun flowLabel(id: FlowId): String {
+        return id.dstIp + ":" + id.dstPort + (if (id.v6) "6" else "4")
     }
 
     private fun handleGameUdp(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
+        gameInPkts.incrementAndGet()
+        gameInBytes.addAndGet(payload.size.toLong())
+        if (payload.isNotEmpty() && (payload[0].toInt() and 0xFF) == 0x01) forwardPing(id, v6, src, dst, sport, dport, payload)
         var flow = gameFlows[id]
         if (flow == null) {
             pruneGameFlows()
             val conn = RakConn(11L, id.dstIp, dport.toLong(), id.srcIp, sport.toLong())
-            val f = GameFlow(conn, System.currentTimeMillis(), id)
             val srcCopy = src.copyOf()
             val dstCopy = dst.copyOf()
-            conn.onWrite = { bytes ->
-                val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
-                writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+            var sess: RakServerSession? = null
+            sess = RakServerSession(conn, rakServerGuid, 1400, srcCopy, sport) { bytes ->
+                if (bytes.isNotEmpty() && (bytes[0].toInt() and 0xFF) == 0x08) {
+                    try { logger?.invoke("relay.offer " + id.dstIp + ":" + id.dstPort + " from=" + id.srcIp + ":" + id.srcPort) } catch (_: Throwable) { }
+                }
+                val f = gameFlows[id]
+                if (f != null) {
+                    f.lastSeen = System.currentTimeMillis()
+                    val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
+                    gameOutPkts.incrementAndGet()
+                    gameOutBytes.addAndGet(bytes.size.toLong())
+                    writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+                }
             }
-            conn.onClose = { gameFlows.remove(id) }
-            flow = f
-            gameFlows[id] = f
-            Libmitm.offer(conn)
+            conn.onWrite = { bytes ->
+                try {
+                    sess?.sendConnected(bytes)
+                } catch (_: Throwable) {
+                }
+            }
+            conn.onClose = {
+                try {
+                    sess?.shutdown()
+                } catch (_: Throwable) {
+                }
+                gameFlows.remove(id)
+            }
+            flow = GameFlow(sess, System.currentTimeMillis(), id)
+            gameFlows[id] = flow
+            try { val hx = payload.take(16).joinToString("") { "%02x".format(it) }; logger?.invoke("game.open " + flowLabel(id) + " src=" + id.srcIp + ":" + id.srcPort + " id=" + (payload[0].toInt() and 0xFF) + " hex=" + hx) } catch (_: Throwable) { }
         }
         flow.lastSeen = System.currentTimeMillis()
-        flow.conn.push(payload)
+        try {
+            flow.session.handleIncoming(payload)
+        } catch (_: Throwable) {
+        }
     }
 
     private fun handleTcp(v6: Boolean, src: ByteArray, dst: ByteArray, tcp: ByteArray) {
@@ -473,6 +595,10 @@ class TunCore(
         val id = FlowId(v6, ipStr(v6, src), sport, ipStr(v6, dst), dport, IpProto.TCP)
         var conn = tcpConns[id]
         if (conn == null) {
+            if (tcpConns.size > 256) {
+                sendRst(v6, src, dst, sport, dport, 0, (seq + 1) and 0xFFFFFFFFL)
+                return
+            }
             if ((flags and TcpFlag.SYN) == 0) {
                 sendRst(v6, src, dst, sport, dport, 0, (seq + 1) and 0xFFFFFFFFL)
                 return
@@ -512,6 +638,7 @@ class TunCore(
             if ((flags and TcpFlag.ACK) != 0 && conn.state == 1 && ack == conn.sndNxt) {
                 conn.state = 2
                 conn.sndUna = ack
+                tcpHandshakes.incrementAndGet()
             } else if ((flags and TcpFlag.ACK) != 0) {
                 advanceAck(conn, ack)
             }
@@ -579,6 +706,10 @@ class TunCore(
             val sock = try {
                 val s = Socket()
                 s.tcpNoDelay = true
+                try {
+                    tcpProtector?.invoke(s)
+                } catch (_: Throwable) {
+                }
                 s.connect(InetSocketAddress(InetAddress.getByAddress(dst), dport), 15000)
                 s
             } catch (_: Throwable) {
@@ -676,7 +807,75 @@ class TunCore(
         tcpConns.remove(conn.id)
     }
 
+    private fun getPingSock(): DatagramSocket? {
+        var s = pingSock
+        if (s == null) {
+            synchronized(this) {
+                s = pingSock
+                if (s == null) {
+                    try {
+                        val ns = DatagramSocket()
+                        try {
+                            ns.broadcast = true
+                        } catch (_: Throwable) {
+                        }
+                        try {
+                            udpProtector?.invoke(ns)
+                        } catch (_: Throwable) {
+                        }
+                        pingSock = ns
+                        s = ns
+                        spawn("ping-relay") { pingRelayLoop(ns) }
+                    } catch (_: Throwable) {
+                        return null
+                    }
+                }
+            }
+        }
+        return s
+    }
+
+    private fun forwardPing(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
+        if (v6) return
+        try {
+            val sock = getPingSock() ?: return
+            if (pingTargets.size > 256) pingTargets.clear()
+            pingTargets[id.dstIp + ":" + id.dstPort] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), id.dstIp + ":" + id.dstPort)
+            sock.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(dst), dport))
+            pingFwd.incrementAndGet()
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun pingRelayLoop(sock: DatagramSocket) {
+        val buf = ByteArray(2048)
+        while (running.get()) {
+            val p = DatagramPacket(buf, buf.size)
+            try {
+                sock.receive(p)
+            } catch (_: Throwable) {
+                return
+            }
+            if (p.length < 1 || (p.data[0].toInt() and 0xFF) != 0x1C) continue
+            try {
+                val rip = p.address.hostAddress
+                val tg0: PingTarget? = pingTargets[rip + ":" + p.port]
+                    ?: pingTargets.entries.firstOrNull { it.key.startsWith(rip + ":") && System.currentTimeMillis() - it.value.at < 3000 }?.value
+                val tgv = tg0 ?: continue
+                if (System.currentTimeMillis() - tgv.at > 3000) continue
+                Libmitm.markReal(tgv.serverKey)
+                Libmitm.markReal(rip + ":" + p.port)
+                val data = p.data.copyOfRange(0, p.length)
+                val udp = buildUdp(p.port, tgv.clientPort, data, p.address.address, tgv.clientIp, false)
+                pongReal.incrementAndGet()
+                writeTun(buildIPv4(p.address.address, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
     private fun sweeperLoop() {
+        var tick = 0
         while (running.get()) {
             try {
                 Thread.sleep(500)
@@ -685,7 +884,7 @@ class TunCore(
             }
             val now = System.currentTimeMillis()
             udpFlows.entries.removeIf {
-                if (now - it.value.lastSeen > 120000) {
+                if (now - it.value.lastSeen > 60000) {
                     try {
                         it.value.socket.close()
                     } catch (_: Throwable) {
@@ -694,10 +893,46 @@ class TunCore(
                 } else false
             }
             gameFlows.entries.removeIf {
-                if (now - it.value.lastSeen > 90000) {
-                    it.value.conn.close()
+                if (now - it.value.lastSeen > 600000) {
+                    try {
+                        it.value.session.shutdown()
+                    } catch (_: Throwable) {
+                    }
                     true
                 } else false
+            }
+            for (f in gameFlows.values) {
+                try {
+                    f.session.tick(now)
+                } catch (_: Throwable) {
+                }
+            }
+            tick++
+            if (tick % 60 == 0) {
+                try {
+                    var din = 0L
+                    var dout = 0L
+                    var pin = 0L
+                    var pout = 0L
+                    for (f in gameFlows.values) {
+                        din += f.session.datagramsIn
+                        dout += f.session.datagramsOut
+                        pin += f.session.payloadsIn
+                        pout += f.session.payloadsOut
+                    }
+                    try {
+                        val det = gameFlows.values.take(4).joinToString(" ") { flowLabel(it.id) + ":" + it.session.idSummary() }
+                        logger?.invoke("rakdetail " + det + " werr=" + writeErrs.get() + (if (firstWriteErr != null) ":" + firstWriteErr else "") + " tcphs=" + tcpHandshakes.get())
+                    } catch (_: Throwable) {
+                    }
+                    logger?.invoke("rakstat flows=" + gameFlows.size + " udp=" + udpFlows.size + " tcp=" + tcpConns.size +
+                        " ipin=" + ipInPkts.get() +
+                        " gin=" + gameInPkts.get() + "/" + (gameInBytes.get() / 1024) + "KB" +
+                        " gout=" + gameOutPkts.get() + "/" + (gameOutBytes.get() / 1024) + "KB" +
+                        " din=" + din + " dout=" + dout + " pin=" + pin + " pout=" + pout +
+                        " pfwd=" + pingFwd.get() + " preal=" + pongReal.get() + " dual=1")
+                } catch (_: Throwable) {
+                }
             }
             for (conn in tcpConns.values) {
                 var resetId: FlowId? = null
