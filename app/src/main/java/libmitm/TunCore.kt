@@ -567,6 +567,8 @@ class TunCore(
                         udpProtector?.invoke(s)
                     } catch (_: Throwable) {
                     }
+                    try { s.receiveBufferSize = 1024 * 1024 } catch (_: Throwable) { }
+                    try { s.sendBufferSize = 256 * 1024 } catch (_: Throwable) { }
                 }
             } catch (_: Throwable) {
                 return
@@ -945,6 +947,8 @@ class TunCore(
                             ns.broadcast = true
                         } catch (_: Throwable) {
                         }
+                        try { ns.receiveBufferSize = 1024 * 1024 } catch (_: Throwable) { }
+                        try { ns.sendBufferSize = 256 * 1024 } catch (_: Throwable) { }
                         try {
                             udpProtector?.invoke(ns)
                         } catch (_: Throwable) {
@@ -1010,7 +1014,7 @@ class TunCore(
             }
             val now = System.currentTimeMillis()
             udpFlows.entries.removeIf {
-                if (now - it.value.lastSeen > 60000) {
+                if (now - it.value.lastSeen > 30000) {
                     try {
                         it.value.socket.close()
                     } catch (_: Throwable) {
