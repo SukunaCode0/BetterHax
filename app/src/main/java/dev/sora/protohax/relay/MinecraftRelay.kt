@@ -16,6 +16,7 @@ import dev.sora.relay.cheat.module.ModuleManager
 import dev.sora.relay.cheat.module.impl.misc.ModuleResourcePackSpoof
 import dev.sora.relay.game.GameSession
 import dev.sora.relay.session.MinecraftRelaySession
+import dev.sora.relay.session.MinecraftRelayPacketListener
 import dev.sora.relay.session.listener.RelayListenerAutoCodec
 import dev.sora.relay.session.listener.RelayListenerEncryptedSession
 import dev.sora.relay.session.listener.RelayListenerNetworkSettings
@@ -25,6 +26,7 @@ import dev.sora.relay.utils.logInfo
 import io.netty.channel.ChannelFactory
 import io.netty.channel.ServerChannel
 import org.cloudburstmc.netty.channel.raknet.RakReliability
+import org.cloudburstmc.protocol.bedrock.packet.BedrockPacket
 import java.io.File
 import java.net.InetSocketAddress
 import kotlin.concurrent.thread
@@ -87,6 +89,17 @@ object MinecraftRelay {
                 session.listeners.add(RelayListenerAutoCodec(session))
                 this@MinecraftRelay.session.netSession = session
                 session.listeners.add(this@MinecraftRelay.session)
+                session.listeners.add(object : MinecraftRelayPacketListener {
+                    override fun onPacketOutbound(packet: BedrockPacket): Boolean {
+                        logInfo("pk.out " + packet.javaClass.simpleName)
+                        return true
+                    }
+                    override fun onPacketInbound(packet: BedrockPacket): Boolean {
+                        logInfo("pk.in " + packet.javaClass.simpleName)
+                        return true
+                    }
+                })
+
 
                 val sessionEncryptor = if (Settings.offlineSessionEncryption.getValue(MyApplication.instance) && AccountManager.currentAccount == null) {
 					RelayListenerEncryptedSession()
