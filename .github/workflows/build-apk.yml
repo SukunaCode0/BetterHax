@@ -39,18 +39,63 @@ jobs:
           grep -n "ProtoHax\|junit" app/build.gradle
           grep -n "repositories" -A6 settings.gradle | head -n 20
 
+      - name: Verify uploaded sources
+        run: |
+          check() {
+            if ! grep -q "$2" "$1"; then
+              echo "STALE FILE: $1 is missing marker: $2"
+              echo "Press the setup-page button again so all files re-upload, then re-run."
+              exit 1
+            fi
+            echo "ok: $1 contains $2"
+          }
+          check app/src/main/java/libmitm/TUN.kt "fun setProtectors"
+          check app/src/main/java/libmitm/TUN.kt "var logger"
+          check app/src/main/java/libmitm/TunCore.kt "var udpProtector"
+          check app/src/main/java/libmitm/RakServer.kt "fun sendFrame"
+          check app/src/main/java/libmitm/RakServer.kt "fun handleInnerPing"
+          check app/src/test/java/libmitm/TunCoreTest.kt "fun readFramePayloadWithId"
+          md5sum app/src/main/java/libmitm/*.kt app/src/test/java/libmitm/*.kt
+
       - name: Run VPN stack unit tests
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-test.log
 
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew app:assembleDebug --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew app:assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-apk.log
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ProtoHax-1.26.50-apk
           path: app/build/outputs/apk/debug/*.apk
+
+      - name: Show error summary
+        if: failure()
+        run: |
+          echo "===== BETTERHAX ERROR SUMMARY (paste everything between the markers) ====="
+          for f in /tmp/gradle-test.log /tmp/gradle-apk.log; do
+            if [ -f $f ]; then
+              echo "----- from $f -----"
+              grep -E "^e: " $f | head -n 60 || true
+              grep -E "FAILED|^e: |error:|Execution failed|What went wrong|Caused by|STALE FILE" -A6 $f | head -n 80 || true
+            else
+              echo "----- $f missing (that step never ran) -----"
+            fi
+          done
+          echo "===== END SUMMARY ====="
+
+      - name: Upload full logs and test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            /tmp/gradle-test.log
+            /tmp/gradle-apk.log
+            app/build/reports/tests/testDebugUnitTest/
