@@ -234,6 +234,7 @@ class TunCore(
     private val gameInBytes = AtomicLong(0)
     private val gameOutPkts = AtomicLong(0)
     private val gameOutBytes = AtomicLong(0)
+    private val relayErrs = AtomicLong(0)
     private val writeErrs = AtomicLong(0)
     @Volatile private var firstWriteErr: String? = null
     private val tcpHandshakes = AtomicLong(0)
@@ -257,7 +258,7 @@ class TunCore(
         var sndUna: Long = 0
         var sndNxt: Long = 0
         var rcvNxt: Long = 0
-        var appMss = 1460
+        var appMss = 1360
         var closed = false
         var finSent = false
         var unackedSince: Long = 0
@@ -265,6 +266,8 @@ class TunCore(
         var pendingAppData = ByteArray(0)
         var upBytes = 0L
         var dnBytes = 0L
+        var dupAcks = 0L
+        var dialMs = -1L
         val lock = Any()
     }
 
@@ -666,7 +669,9 @@ class TunCore(
             conn.onWrite = { bytes ->
                 try {
                     sess?.sendConnected(bytes)
-                } catch (_: Throwable) {
+                } catch (t: Throwable) {
+                    val n = relayErrs.incrementAndGet()
+                    if (n <= 4) try { logger?.invoke("relay.err out " + flowLabel(id) + " " + t.javaClass.simpleName) } catch (_: Throwable) { }
                 }
             }
             conn.onClose = {
@@ -683,7 +688,9 @@ class TunCore(
         flow.lastSeen = System.currentTimeMillis()
         try {
             flow.session.handleIncoming(payload)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
+            val n = relayErrs.incrementAndGet()
+            if (n <= 4) try { logger?.invoke("relay.err in " + flowLabel(id) + " " + t.javaClass.simpleName) } catch (_: Throwable) { }
         }
     }
 
@@ -713,12 +720,12 @@ class TunCore(
             conn.rcvNxt = (seq + 1) and 0xFFFFFFFFL
             try { logger?.invoke("tcp.open " + id.dstIp + ":" + id.dstPort + (dnsNames[id.dstIp]?.let { "($it)" } ?: "")) } catch (_: Throwable) { }
             val m = parseMss(tcp)
-            if (m > 0) conn.appMss = m.coerceIn(536, 1460)
+            if (m > 0) conn.appMss = m.coerceIn(536, 1360)
             dialTcp(conn, v6, src.copyOf(), dst.copyOf(), sport, dport)
             synchronized(conn.lock) {
                 conn.state = 1
                 val synAck = buildTcp(dport, sport, conn.iss, conn.rcvNxt, TcpFlag.SYN or TcpFlag.ACK,
-                    65535, ByteArray(0), dst, src, v6, mss = 1460)
+                    65535, ByteArray(0), dst, src, v6, mss = 1360)
                 conn.sndNxt = (conn.iss + 1) and 0xFFFFFFFFL
                 conn.unackedSince = System.currentTimeMillis()
                 writeTun(wrap(v6, dst, src, IpProto.TCP, synAck))
@@ -735,9 +742,10 @@ class TunCore(
             if (seq != conn.rcvNxt) {
                 if ((flags and TcpFlag.SYN) != 0 && seq == ((conn.rcvNxt - 1) and 0xFFFFFFFFL)) {
                     val synAck = buildTcp(dport, sport, conn.iss, conn.rcvNxt, TcpFlag.SYN or TcpFlag.ACK,
-                        65535, ByteArray(0), dst, src, v6, mss = 1460)
+                        65535, ByteArray(0), dst, src, v6, mss = 1360)
                     writeTun(wrap(v6, dst, src, IpProto.TCP, synAck))
                 } else {
+                    conn.dupAcks++
                     sendAck(conn, v6, src, dst, sport, dport)
                 }
                 return
@@ -812,6 +820,7 @@ class TunCore(
 
     private fun dialTcp(conn: TcpConn, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int) {
         spawn("tcp-dial") {
+            val t0 = System.currentTimeMillis()
             val sock = try {
                 val s = Socket()
                 s.tcpNoDelay = true
@@ -839,6 +848,8 @@ class TunCore(
                     }
                     return@spawn
                 }
+                conn.dialMs = System.currentTimeMillis() - t0
+                try { logger?.invoke("tcp.connected " + conn.id.dstIp + ":" + conn.id.dstPort + " dialMs=" + conn.dialMs) } catch (_: Throwable) { }
                 conn.socket = sock
                 if (conn.pendingAppData.isNotEmpty()) {
                     try {
@@ -867,7 +878,7 @@ class TunCore(
         val v6 = id.v6
         val src = addrBytes(id.srcIp)
         val dst = addrBytes(id.dstIp)
-        val buf = ByteArray(1460)
+        val buf = ByteArray(1360)
         while (running.get()) {
             val sock = synchronized(conn.lock) { conn.socket } ?: return
             val n = try {
@@ -878,6 +889,7 @@ class TunCore(
             if (n < 0) break
             if (n == 0) continue
             val data = buf.copyOfRange(0, n)
+            var first = false
             val seg = synchronized(conn.lock) {
                 if (conn.closed || conn.state != 2) {
                     null
@@ -885,12 +897,14 @@ class TunCore(
                     val s = buildTcp(id.dstPort, id.srcPort, conn.sndNxt, conn.rcvNxt,
                         TcpFlag.ACK, 65535, data, dst, src, v6)
                     conn.sndNxt = (conn.sndNxt + data.size) and 0xFFFFFFFFL
+                    if (conn.dnBytes == 0L) first = true
                     conn.dnBytes += data.size.toLong()
                     conn.unackedSince = System.currentTimeMillis()
                     conn.lastUnacked = wrap(v6, dst, src, IpProto.TCP, s)
                     conn.lastUnacked
                 }
             } ?: continue
+            if (first) try { logger?.invoke("tcp.dn-first " + id.dstIp + ":" + id.dstPort + " len=" + data.size) } catch (_: Throwable) { }
             writeTun(seg)
         }
         synchronized(conn.lock) {
@@ -910,7 +924,7 @@ class TunCore(
         synchronized(conn.lock) {
             if (conn.closed) return
             conn.closed = true
-            try { logger?.invoke("tcp.close " + conn.id.dstIp + ":" + conn.id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes) } catch (_: Throwable) { }
+            try { logger?.invoke("tcp.close " + conn.id.dstIp + ":" + conn.id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes + " dup=" + conn.dupAcks + " dialMs=" + conn.dialMs) } catch (_: Throwable) { }
             try {
                 conn.socket?.close()
             } catch (_: Throwable) {
@@ -1060,7 +1074,7 @@ class TunCore(
                     }
                 }
                 if (giveUp) {
-                    try { logger?.invoke("tcp.giveup " + conn.id.dstIp + ":" + conn.id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes) } catch (_: Throwable) { }
+                    try { logger?.invoke("tcp.giveup " + conn.id.dstIp + ":" + conn.id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes + " dup=" + conn.dupAcks + " dialMs=" + conn.dialMs) } catch (_: Throwable) { }
                     killTcp(conn)
                 } else if (resend != null) {
                     writeTun(resend!!)
