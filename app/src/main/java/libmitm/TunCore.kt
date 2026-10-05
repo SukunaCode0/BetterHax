@@ -241,10 +241,11 @@ class TunCore(
     private val pingFwd = AtomicLong(0)
     private val pongReal = AtomicLong(0)
     @Volatile private var pingSock: DatagramSocket? = null
-    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String)
+    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String, val pingTs: Long)
     private val pingTargets = ConcurrentHashMap<String, PingTarget>()
     private val pingOutLogged = ConcurrentHashMap<String, Boolean>()
     private val pongInLogged = ConcurrentHashMap<String, Boolean>()
+    private val pongHexLogged = AtomicLong(0)
     private val pongNoMatch = AtomicLong(0)
     private val pingV6drop = AtomicLong(0)
     private val iface4: ByteArray by lazy { InetAddress.getByName("10.13.37.1").address }
@@ -979,8 +980,12 @@ class TunCore(
             val sock = getPingSock() ?: return
             if (pingTargets.size > 256) { pingTargets.clear(); pingOutLogged.clear(); pongInLogged.clear() }
             val key = id.dstIp + ":" + id.dstPort
-            pingTargets[key] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), key)
-            if (pingOutLogged.putIfAbsent(key, true) == null) try { logger?.invoke("ping.out " + key) } catch (_: Throwable) { }
+            val pts = try { if (payload.size >= 9) getU64Be(payload, 1) else -1L } catch (_: Throwable) { -1L }
+            pingTargets[key] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), key, pts)
+            if (pingOutLogged.putIfAbsent(key, true) == null) {
+                val phex = try { payload.take(33).joinToString("") { "%02x".format(it) } } catch (_: Throwable) { "?" }
+                try { logger?.invoke("ping.out " + key + " ts=" + pts + " hex=" + phex) } catch (_: Throwable) { }
+            }
             sock.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(dst), dport))
             pingFwd.incrementAndGet()
         } catch (_: Throwable) {
@@ -999,16 +1004,40 @@ class TunCore(
             if (p.length < 1 || (p.data[0].toInt() and 0xFF) != 0x1C) continue
             try {
                 val rip = p.address.hostAddress
+                val nowMs = System.currentTimeMillis()
                 val tg0: PingTarget? = pingTargets[rip + ":" + p.port]
-                    ?: pingTargets.entries.firstOrNull { it.key.startsWith(rip + ":") && System.currentTimeMillis() - it.value.at < 3000 }?.value
+                    ?: pingTargets.entries.firstOrNull { it.key.startsWith(rip + ":") && nowMs - it.value.at < 3000 }?.value
+                    ?: pingTargets.entries.filter { nowMs - it.value.at < 1500 }.maxByOrNull { it.value.at }?.let {
+                        if (pongInLogged.putIfAbsent(it.key + "|redir", true) == null) try { logger?.invoke("pong.redir " + it.key + " rip=" + rip + ":" + p.port) } catch (_: Throwable) { }
+                        it.value
+                    }
                 if (tg0 == null) {
                     val n = pongNoMatch.incrementAndGet()
                     if (n <= 6) try { logger?.invoke("pong.nomatch " + rip + ":" + p.port) } catch (_: Throwable) { }
                     continue
                 }
                 val tgv = tg0
-                if (System.currentTimeMillis() - tgv.at > 3000) continue
+                if (nowMs - tgv.at > 3000) continue
                 val data = p.data.copyOfRange(0, p.length)
+                if (pongHexLogged.get() < 3) {
+                    val n = pongHexLogged.incrementAndGet()
+                    if (n <= 3) {
+                        try {
+                            val rts = if (data.size >= 9) getU64Be(data, 1) else -1L
+                            val rguid = if (data.size >= 17) getU64Be(data, 9) else -1L
+                            var magicOk = false
+                            var mhex = "?"
+                            if (data.size >= 33) {
+                                mhex = data.copyOfRange(17, 33).joinToString("") { "%02x".format(it) }
+                                magicOk = true
+                                for (i in RAKNET_MAGIC.indices) if (data[17 + i] != RAKNET_MAGIC[i]) { magicOk = false; break }
+                            }
+                            val mlen = if (data.size >= 35) getU16(data, 33) else -1
+                            try { logger?.invoke("pong.hex " + tgv.serverKey + " len=" + data.size + " ts=" + rts + " tsMatch=" + (rts == tgv.pingTs) + " guid=" + rguid + " magicOk=" + magicOk + " mhex=" + mhex + " mlen=" + mlen + " remain=" + (data.size - 35)) } catch (_: Throwable) { }
+                        } catch (_: Throwable) {
+                        }
+                    }
+                }
                 if (pongInLogged.putIfAbsent(tgv.serverKey, true) == null) {
                     val motd = try {
                         if (data.size > 35) {
@@ -1016,13 +1045,15 @@ class TunCore(
                             String(data, 35, minOf(35 + mlen, data.size) - 35, Charsets.UTF_8).take(120)
                         } else "?"
                     } catch (_: Throwable) { "?" }
-                    try { logger?.invoke("pong.in " + tgv.serverKey + " rip=" + rip + ":" + p.port + " ageMs=" + (System.currentTimeMillis() - tgv.at) + " motd=" + motd) } catch (_: Throwable) { }
+                    try { logger?.invoke("pong.in " + tgv.serverKey + " rip=" + rip + ":" + p.port + " ageMs=" + (nowMs - tgv.at) + " motd=" + motd) } catch (_: Throwable) { }
                 }
                 Libmitm.markReal(tgv.serverKey)
                 Libmitm.markReal(rip + ":" + p.port)
-                val udp = buildUdp(p.port, tgv.clientPort, data, p.address.address, tgv.clientIp, false)
+                val expIpStr = tgv.serverKey.substringBeforeLast(":")
+                val expIp = try { InetAddress.getByName(expIpStr).address } catch (_: Throwable) { p.address.address }
+                val udp = buildUdp(p.port, tgv.clientPort, data, expIp, tgv.clientIp, false)
                 pongReal.incrementAndGet()
-                writeTun(buildIPv4(p.address.address, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+                writeTun(buildIPv4(expIp, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
             } catch (_: Throwable) {
             }
         }
