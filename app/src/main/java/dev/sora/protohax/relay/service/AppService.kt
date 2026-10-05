@@ -115,7 +115,16 @@ class AppService : VpnService() {
         builder.setMtu(VPN_MTU)
         builder.setSession("ProtoHax")
         builder.addAllowedApplication(MainActivity.targetPackage)
-        builder.addDnsServer("8.8.8.8")
+        val sysDns = systemDnsServers()
+        if (sysDns.isEmpty()) {
+            builder.addDnsServer("8.8.8.8")
+            dev.sora.protohax.util.SvcJournal.mark("vpn.dns fallback=8.8.8.8")
+        } else {
+            for (d in sysDns) {
+                try { builder.addDnsServer(d) } catch (_: Throwable) { }
+            }
+            dev.sora.protohax.util.SvcJournal.mark("vpn.dns " + sysDns.joinToString(","))
+        }
         // ipv4
         if (hasIPv4) {
             builder.addAddress(PRIVATE_VLAN4_CLIENT, 30)
@@ -251,6 +260,21 @@ class AppService : VpnService() {
 			}
 			Thread(it::close).start()
 		}
+    }
+
+    private fun systemDnsServers(): List<String> {
+        return try {
+            val connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            val props = connectivityManager.getLinkProperties(connectivityManager.activeNetwork ?: return emptyList()) ?: return emptyList()
+            props.dnsServers.mapNotNull {
+                try {
+                    val h = it.hostAddress ?: return@mapNotNull null
+                    if (h.contains(":")) null else h
+                } catch (_: Throwable) { null }
+            }.distinct().take(3)
+        } catch (_: Throwable) {
+            emptyList()
+        }
     }
 
     private fun checkNetState(): Pair<Boolean, Boolean> {
