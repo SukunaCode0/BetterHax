@@ -42,41 +42,15 @@ jobs:
       - name: Run VPN stack unit tests
         run: |
           chmod +x gradlew
-          set -o pipefail
-          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-test.log
+          ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          set -o pipefail
-          ./gradlew app:assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-apk.log
+          ./gradlew app:assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ProtoHax-1.26.50-apk
           path: app/build/outputs/apk/debug/*.apk
-
-      - name: Show error summary
-        if: failure()
-        run: |
-          echo "===== BETTERHAX ERROR SUMMARY (paste everything between the markers) ====="
-          for f in /tmp/gradle-test.log /tmp/gradle-apk.log; do
-            if [ -f $f ]; then
-              echo "----- from $f -----"
-              grep -E "FAILED|^e: |error:|Execution failed|What went wrong|Caused by" -A6 $f | head -n 80 || true
-            else
-              echo "----- $f missing (that step never ran) -----"
-            fi
-          done
-          echo "===== END SUMMARY ====="
-
-      - name: Upload full logs and test reports
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            /tmp/gradle-test.log
-            /tmp/gradle-apk.log
-            app/build/reports/tests/testDebugUnitTest/
