@@ -13,7 +13,7 @@ object Libmitm {
     @JvmStatic
     fun pollConnection(): RakConn? {
         return try {
-            pending.take()
+            pending.poll(50, TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {
             null
         }
@@ -25,21 +25,5 @@ object Libmitm {
 
     internal fun drain() {
         pending.clear()
-    }
-
-    private val realSeen = java.util.concurrent.ConcurrentHashMap<String, Long>()
-
-    fun markReal(k: String) {
-        if (realSeen.size > 512) realSeen.clear()
-        realSeen[k] = System.currentTimeMillis()
-    }
-
-    fun hasReal(k: String): Boolean {
-        val t = realSeen[k] ?: return false
-        if (System.currentTimeMillis() - t > 120000) {
-            realSeen.remove(k)
-            return false
-        }
-        return true
     }
 }
