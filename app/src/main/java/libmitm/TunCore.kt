@@ -442,6 +442,81 @@ class TunCore(
 
     private fun ipStr(v6: Boolean, b: ByteArray): String = InetAddress.getByAddress(b).hostAddress
 
+    private val dnsNames = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    private fun noteDnsAnswers(payload: ByteArray) {
+        try {
+            if (payload.size < 13) return
+            var p = 12
+            var guard = 0
+            fun skipName(): Boolean {
+                while (p < payload.size && guard++ < 64) {
+                    val l = payload[p].toInt() and 0xFF
+                    if (l == 0) { p++; return true }
+                    if ((l and 0xC0) == 0xC0) { p += 2; return true }
+                    p += 1 + l
+                }
+                return false
+            }
+            fun readName(): String {
+                val sb = StringBuilder()
+                var pp = p
+                var g2 = 0
+                while (pp < payload.size && g2++ < 16) {
+                    val l = payload[pp].toInt() and 0xFF
+                    if (l == 0) break
+                    if ((l and 0xC0) == 0xC0) {
+                        val off = ((l and 0x3F) shl 8) or (payload[pp + 1].toInt() and 0xFF)
+                        var qq = off
+                        var g3 = 0
+                        while (qq < payload.size && g3++ < 16) {
+                            val l3 = payload[qq].toInt() and 0xFF
+                            if (l3 == 0 || (l3 and 0xC0) == 0xC0) break
+                            if (qq + 1 + l3 > payload.size) break
+                            if (sb.isNotEmpty()) sb.append('.')
+                            sb.append(String(payload, qq + 1, l3, Charsets.US_ASCII))
+                            qq += 1 + l3
+                        }
+                        break
+                    }
+                    if (pp + 1 + l > payload.size) break
+                    if (sb.isNotEmpty()) sb.append('.')
+                    sb.append(String(payload, pp + 1, l, Charsets.US_ASCII))
+                    pp += 1 + l
+                }
+                return sb.toString()
+            }
+            val qdCount = getU16(payload, 4)
+            val anCount = getU16(payload, 6)
+            var qname = ""
+            var qi = 0
+            while (qi < qdCount && p + 4 <= payload.size && guard++ < 64) {
+                if (qi == 0) qname = readName()
+                if (!skipName()) return
+                if (p + 4 > payload.size) return
+                p += 4
+                qi++
+            }
+            if (qname.isEmpty()) return
+            var n = 0
+            while (n < anCount && p + 10 <= payload.size && guard++ < 256) {
+                if (!skipName()) break
+                if (p + 10 > payload.size) break
+                val typ = getU16(payload, p)
+                val rdLen = getU16(payload, p + 8)
+                p += 10
+                if (typ == 1 && rdLen == 4 && p + 4 <= payload.size) {
+                    val ip = InetAddress.getByAddress(payload.copyOfRange(p, p + 4)).hostAddress
+                    if (dnsNames.size > 512) dnsNames.clear()
+                    dnsNames[ip] = qname
+                }
+                p += rdLen
+                n++
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
     private fun dnsName(payload: ByteArray): String {
         try {
             if (payload.size < 13) return "?"
@@ -533,6 +608,7 @@ class TunCore(
             val data = p.data.copyOfRange(0, p.length)
             if (flow.id.dstPort == 53) {
                 try { logger?.invoke("dns.r " + data.size + "B") } catch (_: Throwable) { }
+                try { noteDnsAnswers(data) } catch (_: Throwable) { }
             }
             val udp = buildUdp(p.port, flow.id.srcPort, data, p.address.address, addrBytes(flow.id.srcIp), v6)
             writeTun(wrap(v6, addrBytes(flow.id.dstIp), addrBytes(flow.id.srcIp), IpProto.UDP, udp))
@@ -635,7 +711,7 @@ class TunCore(
             conn = TcpConn(id)
             tcpConns[id] = conn
             conn.rcvNxt = (seq + 1) and 0xFFFFFFFFL
-            try { logger?.invoke("tcp.open " + id.dstIp + ":" + id.dstPort) } catch (_: Throwable) { }
+            try { logger?.invoke("tcp.open " + id.dstIp + ":" + id.dstPort + (dnsNames[id.dstIp]?.let { "($it)" } ?: "")) } catch (_: Throwable) { }
             val m = parseMss(tcp)
             if (m > 0) conn.appMss = m.coerceIn(536, 1460)
             dialTcp(conn, v6, src.copyOf(), dst.copyOf(), sport, dport)
@@ -652,6 +728,7 @@ class TunCore(
         synchronized(conn.lock) {
             if (conn.closed) return
             if ((flags and TcpFlag.RST) != 0) {
+                try { logger?.invoke("tcp.rst-game " + id.dstIp + ":" + id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes) } catch (_: Throwable) { }
                 killTcp(conn)
                 return
             }
@@ -695,6 +772,7 @@ class TunCore(
             }
             if ((flags and TcpFlag.FIN) != 0) {
                 conn.rcvNxt = (conn.rcvNxt + 1) and 0xFFFFFFFFL
+                try { logger?.invoke("tcp.fin-game " + id.dstIp + ":" + id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes) } catch (_: Throwable) { }
                 try {
                     conn.socket?.shutdownOutput()
                 } catch (_: Throwable) {
@@ -969,13 +1047,11 @@ class TunCore(
                 }
             }
             for (conn in tcpConns.values) {
-                var resetId: FlowId? = null
                 var resend: ByteArray? = null
                 var giveUp = false
                 synchronized(conn.lock) {
                     if (!conn.closed && conn.unackedSince != 0L && now - conn.unackedSince > 1000) {
-                        if (now - conn.unackedSince > 8000) {
-                            resetId = conn.id
+                        if (now - conn.unackedSince > 30000) {
                             giveUp = true
                         } else {
                             resend = conn.lastUnacked
@@ -984,9 +1060,7 @@ class TunCore(
                     }
                 }
                 if (giveUp) {
-                    val id = resetId!!
-                    sendRst(id.v6, addrBytes(id.srcIp), addrBytes(id.dstIp),
-                        id.srcPort, id.dstPort, conn.sndNxt, conn.rcvNxt)
+                    try { logger?.invoke("tcp.giveup " + conn.id.dstIp + ":" + conn.id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes) } catch (_: Throwable) { }
                     killTcp(conn)
                 } else if (resend != null) {
                     writeTun(resend!!)
