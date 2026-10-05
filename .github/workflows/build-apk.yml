@@ -55,6 +55,7 @@ jobs:
           check app/src/main/java/libmitm/RakServer.kt "fun sendFrame"
           check app/src/main/java/libmitm/RakServer.kt "fun handleInnerPing"
           check app/src/test/java/libmitm/TunCoreTest.kt "fun readFramePayloadWithId"
+          check app/src/main/java/dev/sora/protohax/relay/MinecraftRelay.kt "pk.out "
           md5sum app/src/main/java/libmitm/*.kt app/src/test/java/libmitm/*.kt
 
       - name: Run VPN stack unit tests
