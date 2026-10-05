@@ -1008,10 +1008,18 @@ class TunCore(
                 }
                 val tgv = tg0
                 if (System.currentTimeMillis() - tgv.at > 3000) continue
-                if (pongInLogged.putIfAbsent(tgv.serverKey, true) == null) try { logger?.invoke("pong.in " + tgv.serverKey + " rip=" + rip + ":" + p.port + " ageMs=" + (System.currentTimeMillis() - tgv.at)) } catch (_: Throwable) { }
+                val data = p.data.copyOfRange(0, p.length)
+                if (pongInLogged.putIfAbsent(tgv.serverKey, true) == null) {
+                    val motd = try {
+                        if (data.size > 35) {
+                            val mlen = getU16(data, 33)
+                            String(data, 35, minOf(35 + mlen, data.size) - 35, Charsets.UTF_8).take(120)
+                        } else "?"
+                    } catch (_: Throwable) { "?" }
+                    try { logger?.invoke("pong.in " + tgv.serverKey + " rip=" + rip + ":" + p.port + " ageMs=" + (System.currentTimeMillis() - tgv.at) + " motd=" + motd) } catch (_: Throwable) { }
+                }
                 Libmitm.markReal(tgv.serverKey)
                 Libmitm.markReal(rip + ":" + p.port)
-                val data = p.data.copyOfRange(0, p.length)
                 val udp = buildUdp(p.port, tgv.clientPort, data, p.address.address, tgv.clientIp, false)
                 pongReal.incrementAndGet()
                 writeTun(buildIPv4(p.address.address, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
