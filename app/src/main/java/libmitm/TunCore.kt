@@ -245,7 +245,7 @@ class TunCore(
     private val pingTargets = ConcurrentHashMap<String, PingTarget>()
     private val pingOutLogged = ConcurrentHashMap<String, Boolean>()
     private val pongInLogged = ConcurrentHashMap<String, Boolean>()
-    private val pongHexLogged = AtomicLong(0)
+    private val pongHexKeys = ConcurrentHashMap<String, Boolean>()
     private val pongNoMatch = AtomicLong(0)
     private val pingV6drop = AtomicLong(0)
     private val iface4: ByteArray by lazy { InetAddress.getByName("10.13.37.1").address }
@@ -978,7 +978,7 @@ class TunCore(
         }
         try {
             val sock = getPingSock() ?: return
-            if (pingTargets.size > 256) { pingTargets.clear(); pingOutLogged.clear(); pongInLogged.clear() }
+            if (pingTargets.size > 256) { pingTargets.clear(); pingOutLogged.clear(); pongInLogged.clear(); pongHexKeys.clear() }
             val key = id.dstIp + ":" + id.dstPort
             val pts = try { if (payload.size >= 9) getU64Be(payload, 1) else -1L } catch (_: Throwable) { -1L }
             pingTargets[key] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), key, pts)
@@ -1019,23 +1019,20 @@ class TunCore(
                 val tgv = tg0
                 if (nowMs - tgv.at > 3000) continue
                 val data = p.data.copyOfRange(0, p.length)
-                if (pongHexLogged.get() < 3) {
-                    val n = pongHexLogged.incrementAndGet()
-                    if (n <= 3) {
-                        try {
-                            val rts = if (data.size >= 9) getU64Be(data, 1) else -1L
-                            val rguid = if (data.size >= 17) getU64Be(data, 9) else -1L
-                            var magicOk = false
-                            var mhex = "?"
-                            if (data.size >= 33) {
-                                mhex = data.copyOfRange(17, 33).joinToString("") { "%02x".format(it) }
-                                magicOk = true
-                                for (i in RAKNET_MAGIC.indices) if (data[17 + i] != RAKNET_MAGIC[i]) { magicOk = false; break }
-                            }
-                            val mlen = if (data.size >= 35) getU16(data, 33) else -1
-                            try { logger?.invoke("pong.hex " + tgv.serverKey + " len=" + data.size + " ts=" + rts + " tsMatch=" + (rts == tgv.pingTs) + " guid=" + rguid + " magicOk=" + magicOk + " mhex=" + mhex + " mlen=" + mlen + " remain=" + (data.size - 35)) } catch (_: Throwable) { }
-                        } catch (_: Throwable) {
+                if (pongHexKeys.putIfAbsent(tgv.serverKey, true) == null) {
+                    try {
+                        val rts = if (data.size >= 9) getU64Be(data, 1) else -1L
+                        val rguid = if (data.size >= 17) getU64Be(data, 9) else -1L
+                        var magicOk = false
+                        var mhex = "?"
+                        if (data.size >= 33) {
+                            mhex = data.copyOfRange(17, 33).joinToString("") { "%02x".format(it) }
+                            magicOk = true
+                            for (i in RAKNET_MAGIC.indices) if (data[17 + i] != RAKNET_MAGIC[i]) { magicOk = false; break }
                         }
+                        val mlen = if (data.size >= 35) getU16(data, 33) else -1
+                        try { logger?.invoke("pong.hex " + tgv.serverKey + " len=" + data.size + " ts=" + rts + " tsMatch=" + (rts == tgv.pingTs) + " guid=" + rguid + " magicOk=" + magicOk + " mhex=" + mhex + " mlen=" + mlen + " remain=" + (data.size - 35)) } catch (_: Throwable) { }
+                    } catch (_: Throwable) {
                     }
                 }
                 if (pongInLogged.putIfAbsent(tgv.serverKey, true) == null) {
