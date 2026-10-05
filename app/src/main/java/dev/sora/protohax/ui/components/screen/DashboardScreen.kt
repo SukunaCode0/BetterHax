@@ -62,7 +62,6 @@ import dev.sora.protohax.ui.navigation.PHaxTopLevelDestination
 import dev.sora.protohax.util.ContextUtils.isAppExists
 import dev.sora.protohax.util.ContextUtils.toast
 import dev.sora.protohax.util.NavigationType
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private fun getTargetPackage(ctx: Context): String {
@@ -142,40 +141,22 @@ private fun BottomFloatingActionButton(
     fun connectVPN() {
         val intent = Intent(AppService.ACTION_START)
         intent.setPackage(mContext.packageName)
-        try {
-            mContext.startForegroundService(intent)
-        } catch (t: Throwable) {
-            scope.launch {
-                snackbarHostState.showSnackbar(
-                    message = (t.message ?: t.toString()),
-                    duration = SnackbarDuration.Long
-                )
-            }
-            return
+        mContext.startForegroundService(intent)
+
+        scope.launch {
+            try { kotlinx.coroutines.delay(1200) } catch (t: Throwable) { }
+            launchTargetApp()
         }
 
         scope.launch {
-            var waited = 0
-            while (!AppService.isActive && waited < 10000) {
-                try { kotlinx.coroutines.delay(500) } catch (t: Throwable) { break }
-                waited += 500
-            }
-            if (AppService.isActive) {
-                launchTargetApp()
-                val result = snackbarHostState.showSnackbar(
-                    message = mContext.getString(R.string.mitm_connected),
-                    actionLabel = mContext.getString(R.string.mitm_connected_launch),
-                    duration = SnackbarDuration.Long
-                )
-                if (result == SnackbarResult.ActionPerformed) {
-                    launchTargetApp()
-                }
-            } else {
-                snackbarHostState.showSnackbar(
-                    message = mContext.getString(R.string.mitm_disconnected),
-                    duration = SnackbarDuration.Long
-                )
-            }
+			val result = snackbarHostState.showSnackbar(
+				message = mContext.getString(R.string.mitm_connected),
+				actionLabel = mContext.getString(R.string.mitm_connected_launch),
+				duration = SnackbarDuration.Long
+			)
+			if (result == SnackbarResult.ActionPerformed) {
+				launchTargetApp()
+			}
         }
     }
 
