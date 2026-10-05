@@ -263,6 +263,8 @@ class TunCore(
         var unackedSince: Long = 0
         var lastUnacked: ByteArray? = null
         var pendingAppData = ByteArray(0)
+        var upBytes = 0L
+        var dnBytes = 0L
         val lock = Any()
     }
 
@@ -440,6 +442,27 @@ class TunCore(
 
     private fun ipStr(v6: Boolean, b: ByteArray): String = InetAddress.getByAddress(b).hostAddress
 
+    private fun dnsName(payload: ByteArray): String {
+        try {
+            if (payload.size < 13) return "?"
+            var p = 12
+            val sb = StringBuilder()
+            var guard = 0
+            while (p < payload.size && guard++ < 32) {
+                val l = payload[p].toInt() and 0xFF
+                if (l == 0) break
+                if ((l and 0xC0) == 0xC0) break
+                if (p + 1 + l > payload.size) break
+                if (sb.isNotEmpty()) sb.append('.')
+                sb.append(String(payload, p + 1, l, Charsets.US_ASCII))
+                p += 1 + l
+            }
+            return if (sb.isEmpty()) "?" else sb.toString()
+        } catch (_: Throwable) {
+            return "?"
+        }
+    }
+
     private fun addrBytes(s: String): ByteArray = InetAddress.getByName(s).address
 
     private fun wrap(v6: Boolean, src: ByteArray, dst: ByteArray, proto: Int, payload: ByteArray): ByteArray {
@@ -473,6 +496,9 @@ class TunCore(
             flow = UdpFlow(sock, System.currentTimeMillis(), id)
             udpFlows[id] = flow
             val f = flow
+            if (dport == 53) {
+                try { logger?.invoke("dns.q " + dnsName(payload)) } catch (_: Throwable) { }
+            }
             spawn("udp-fwd") { udpForwardLoop(f) }
             try {
                 sock.send(DatagramPacket(payload, payload.size, InetAddress.getByAddress(dst), dport))
@@ -505,6 +531,9 @@ class TunCore(
             flow.lastSeen = System.currentTimeMillis()
             val v6 = flow.id.v6
             val data = p.data.copyOfRange(0, p.length)
+            if (flow.id.dstPort == 53) {
+                try { logger?.invoke("dns.r " + data.size + "B") } catch (_: Throwable) { }
+            }
             val udp = buildUdp(p.port, flow.id.srcPort, data, p.address.address, addrBytes(flow.id.srcIp), v6)
             writeTun(wrap(v6, addrBytes(flow.id.dstIp), addrBytes(flow.id.srcIp), IpProto.UDP, udp))
         }
@@ -606,6 +635,7 @@ class TunCore(
             conn = TcpConn(id)
             tcpConns[id] = conn
             conn.rcvNxt = (seq + 1) and 0xFFFFFFFFL
+            try { logger?.invoke("tcp.open " + id.dstIp + ":" + id.dstPort) } catch (_: Throwable) { }
             val m = parseMss(tcp)
             if (m > 0) conn.appMss = m.coerceIn(536, 1460)
             dialTcp(conn, v6, src.copyOf(), dst.copyOf(), sport, dport)
@@ -644,6 +674,7 @@ class TunCore(
             }
             if (payload.isNotEmpty()) {
                 conn.rcvNxt = (conn.rcvNxt + payload.size) and 0xFFFFFFFFL
+                conn.upBytes += payload.size.toLong()
                 val sock = conn.socket
                 if (sock != null && conn.state == 2) {
                     try {
@@ -715,6 +746,7 @@ class TunCore(
             } catch (_: Throwable) {
                 synchronized(conn.lock) {
                     if (!conn.closed && conn.socket == null) {
+                        try { logger?.invoke("tcp.dialfail " + conn.id.dstIp + ":" + conn.id.dstPort) } catch (_: Throwable) { }
                         sendRst(v6, src, dst, sport, dport, 0, conn.rcvNxt)
                         killTcp(conn)
                     }
@@ -775,6 +807,7 @@ class TunCore(
                     val s = buildTcp(id.dstPort, id.srcPort, conn.sndNxt, conn.rcvNxt,
                         TcpFlag.ACK, 65535, data, dst, src, v6)
                     conn.sndNxt = (conn.sndNxt + data.size) and 0xFFFFFFFFL
+                    conn.dnBytes += data.size.toLong()
                     conn.unackedSince = System.currentTimeMillis()
                     conn.lastUnacked = wrap(v6, dst, src, IpProto.TCP, s)
                     conn.lastUnacked
@@ -799,6 +832,7 @@ class TunCore(
         synchronized(conn.lock) {
             if (conn.closed) return
             conn.closed = true
+            try { logger?.invoke("tcp.close " + conn.id.dstIp + ":" + conn.id.dstPort + " up=" + conn.upBytes + " dn=" + conn.dnBytes) } catch (_: Throwable) { }
             try {
                 conn.socket?.close()
             } catch (_: Throwable) {
