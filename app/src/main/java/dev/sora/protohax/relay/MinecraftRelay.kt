@@ -91,11 +91,13 @@ object MinecraftRelay {
                 session.listeners.add(this@MinecraftRelay.session)
                 session.listeners.add(object : MinecraftRelayPacketListener {
                     override fun onPacketOutbound(packet: BedrockPacket): Boolean {
-                        logInfo("pk.out " + packet.javaClass.simpleName)
+                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
+                        logInfo("pk.out " + packet.javaClass.simpleName + ":" + pid)
                         return true
                     }
                     override fun onPacketInbound(packet: BedrockPacket): Boolean {
-                        logInfo("pk.in " + packet.javaClass.simpleName)
+                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
+                        logInfo("pk.in " + packet.javaClass.simpleName + ":" + pid)
                         return true
                     }
                 })
