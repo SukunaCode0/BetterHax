@@ -4,7 +4,7 @@
 
 <img class="logo" src="https://files.catbox.moe/cm4183.jpg" alt="BetterHax logo">
 
-<h1>BetterHax (1.26.50)</h1>
+<h1>BetterHax (1.26.50) (Still In Development!)</h1>
 
 <blockquote>
   <p><strong>Notice:</strong> BetterHax is a modified fork of
