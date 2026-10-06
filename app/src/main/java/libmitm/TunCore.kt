@@ -241,7 +241,7 @@ class TunCore(
     private val pingFwd = AtomicLong(0)
     private val pongReal = AtomicLong(0)
     @Volatile private var pingSock: DatagramSocket? = null
-    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String, val pingTs: Long)
+    private data class PingTarget(val clientIp: ByteArray, val clientPort: Int, val at: Long, val serverKey: String, val pingTs: Long, val v6: Boolean)
     private val pingTargets = ConcurrentHashMap<String, PingTarget>()
     private val pingOutLogged = ConcurrentHashMap<String, Long>()
     private val pongInLogged = ConcurrentHashMap<String, Long>()
@@ -324,6 +324,11 @@ class TunCore(
         } catch (_: Throwable) {
         }
         pingSock = null
+        try {
+            pingSock6?.close()
+        } catch (_: Throwable) {
+        }
+        pingSock6 = null
         tcpConns.values.forEach { killTcp(it) }
         tcpConns.clear()
     }
@@ -970,7 +975,7 @@ class TunCore(
                         }
                         pingSock = ns
                         s = ns
-                        spawn("ping-relay") { pingRelayLoop(ns) }
+                        spawn("ping-relay") { pingRelayLoop(ns, false) }
                     } catch (_: Throwable) {
                         return null
                     }
@@ -980,18 +985,43 @@ class TunCore(
         return s
     }
 
-    private fun forwardPing(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
-        if (v6) {
-            val n = pingV6drop.incrementAndGet()
-            if (n <= 4) try { logger?.invoke("ping.v6drop " + id.dstIp + ":" + id.dstPort) } catch (_: Throwable) { }
-            return
+    @Volatile private var pingSock6: DatagramSocket? = null
+
+    private fun getPingSock6(): DatagramSocket? {
+        var s = pingSock6
+        if (s == null) {
+            synchronized(this) {
+                s = pingSock6
+                if (s == null) {
+                    try {
+                        val ns = DatagramSocket(InetSocketAddress(InetAddress.getByName("::"), 0))
+                        try { ns.receiveBufferSize = 1024 * 1024 } catch (_: Throwable) { }
+                        try { ns.sendBufferSize = 256 * 1024 } catch (_: Throwable) { }
+                        try {
+                            udpProtector?.invoke(ns)
+                        } catch (_: Throwable) {
+                        }
+                        try { logger?.invoke("ping.sock6 up") } catch (_: Throwable) { }
+                        pingSock6 = ns
+                        s = ns
+                        spawn("ping-relay6") { pingRelayLoop(ns, true) }
+                    } catch (t: Throwable) {
+                        try { logger?.invoke("ping.sock6 fail " + t.javaClass.simpleName) } catch (_: Throwable) { }
+                        return null
+                    }
+                }
+            }
         }
+        return s
+    }
+
+    private fun forwardPing(id: FlowId, v6: Boolean, src: ByteArray, dst: ByteArray, sport: Int, dport: Int, payload: ByteArray) {
         try {
-            val sock = getPingSock() ?: return
+            val sock = (if (v6) getPingSock6() else getPingSock()) ?: return
             if (pingTargets.size > 256) { pingTargets.clear(); pingOutLogged.clear(); pongInLogged.clear(); pongHexKeys.clear() }
             val key = id.dstIp + ":" + id.dstPort
             val pts = try { if (payload.size >= 9) getU64Be(payload, 1) else -1L } catch (_: Throwable) { -1L }
-            pingTargets[key] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), key, pts)
+            pingTargets[key] = PingTarget(src.copyOf(), sport, System.currentTimeMillis(), key, pts, v6)
             if (shouldLog(pingOutLogged, key)) {
                 val phex = try { payload.take(33).joinToString("") { "%02x".format(it) } } catch (_: Throwable) { "?" }
                 try { logger?.invoke("ping.out " + key + " ts=" + pts + " hex=" + phex) } catch (_: Throwable) { }
@@ -1002,7 +1032,7 @@ class TunCore(
         }
     }
 
-    private fun pingRelayLoop(sock: DatagramSocket) {
+    private fun pingRelayLoop(sock: DatagramSocket, isV6: Boolean) {
         val buf = ByteArray(2048)
         while (running.get()) {
             val p = DatagramPacket(buf, buf.size)
@@ -1015,9 +1045,9 @@ class TunCore(
             try {
                 val rip = p.address.hostAddress
                 val nowMs = System.currentTimeMillis()
-                val tg0: PingTarget? = pingTargets[rip + ":" + p.port]
-                    ?: pingTargets.entries.firstOrNull { it.key.startsWith(rip + ":") && nowMs - it.value.at < 3000 }?.value
-                    ?: pingTargets.entries.filter { nowMs - it.value.at < 1500 }.maxByOrNull { it.value.at }?.let {
+                val tg0: PingTarget? = pingTargets[rip + ":" + p.port]?.takeIf { it.v6 == isV6 }
+                    ?: pingTargets.entries.firstOrNull { it.value.v6 == isV6 && it.key.startsWith(rip + ":") && nowMs - it.value.at < 3000 }?.value
+                    ?: pingTargets.entries.filter { it.value.v6 == isV6 && nowMs - it.value.at < 1500 }.maxByOrNull { it.value.at }?.let {
                         if (shouldLog(pongInLogged, it.key + "|redir")) try { logger?.invoke("pong.redir " + it.key + " rip=" + rip + ":" + p.port) } catch (_: Throwable) { }
                         it.value
                     }
@@ -1058,9 +1088,15 @@ class TunCore(
                 Libmitm.markReal(rip + ":" + p.port)
                 val expIpStr = tgv.serverKey.substringBeforeLast(":")
                 val expIp = try { InetAddress.getByName(expIpStr).address } catch (_: Throwable) { p.address.address }
-                val udp = buildUdp(p.port, tgv.clientPort, data, expIp, tgv.clientIp, false)
-                pongReal.incrementAndGet()
-                writeTun(buildIPv4(expIp, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+                if (tgv.v6) {
+                    val udp = buildUdp(p.port, tgv.clientPort, data, expIp, tgv.clientIp, true)
+                    pongReal.incrementAndGet()
+                    writeTun(buildIPv6(expIp, tgv.clientIp, IpProto.UDP, udp))
+                } else {
+                    val udp = buildUdp(p.port, tgv.clientPort, data, expIp, tgv.clientIp, false)
+                    pongReal.incrementAndGet()
+                    writeTun(buildIPv4(expIp, tgv.clientIp, IpProto.UDP, udp, ipId.getAndIncrement()))
+                }
             } catch (_: Throwable) {
             }
         }
