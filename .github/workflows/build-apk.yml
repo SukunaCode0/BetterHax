@@ -1,4 +1,4 @@
-name: Build ProtoHax APK (1.26.50)
+name: Build BetterHax APK (1.26.50)
 
 on:
   workflow_dispatch:
