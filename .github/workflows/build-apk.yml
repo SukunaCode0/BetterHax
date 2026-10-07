@@ -83,8 +83,11 @@ jobs:
           for f in /tmp/gradle-test.log /tmp/gradle-apk.log; do
             if [ -f $f ]; then
               echo "----- from $f -----"
-              grep -E "^e: " $f | head -n 60 || true
-              grep -E "FAILED|^e: |error:|Execution failed|What went wrong|Caused by|STALE FILE" -A6 $f | head -n 80 || true
+              grep -aE "^e: |error:|FAILED|Execution failed|What went wrong|Caused by|STALE FILE" $f | head -n 40 || true
+              echo "--- context around first error ---"
+              grep -anA8 -aE "^e: |Compilation error" $f | head -n 60 || true
+              echo "--- md5 of shipped sources ---"
+              md5sum app/src/main/java/dev/sora/protohax/relay/MinecraftRelay.kt app/src/main/java/libmitm/TunCore.kt app/src/main/java/dev/sora/protohax/relay/service/AppService.kt || true
             else
               echo "----- $f missing (that step never ran) -----"
             fi
