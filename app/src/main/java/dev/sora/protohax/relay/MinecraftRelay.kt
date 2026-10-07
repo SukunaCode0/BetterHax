@@ -81,6 +81,15 @@ object MinecraftRelay {
 		moduleManager.registerModule(ModuleESP())
 	}
 
+    private fun pidOf(packet: Any): Int {
+        return try {
+            val m = packet.javaClass.methods.firstOrNull { it.name == "getPacketId" && it.parameterTypes.isEmpty() } ?: return -1
+            (m.invoke(packet) as? Number)?.toInt() ?: -1
+        } catch (_: Throwable) {
+            -1
+        }
+    }
+
     private fun constructRelay(): Relay {
         return Relay(object : MinecraftRelayListener {
             override fun onSessionCreation(session: MinecraftRelaySession): InetSocketAddress {
@@ -91,13 +100,11 @@ object MinecraftRelay {
                 session.listeners.add(this@MinecraftRelay.session)
                 session.listeners.add(object : MinecraftRelayPacketListener {
                     override fun onPacketOutbound(packet: BedrockPacket): Boolean {
-                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
-                        logInfo("pk.out " + packet.javaClass.simpleName + ":" + pid)
+                        logInfo("pk.out " + packet.javaClass.simpleName + ":" + pidOf(packet))
                         return true
                     }
                     override fun onPacketInbound(packet: BedrockPacket): Boolean {
-                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
-                        logInfo("pk.in " + packet.javaClass.simpleName + ":" + pid)
+                        logInfo("pk.in " + packet.javaClass.simpleName + ":" + pidOf(packet))
                         return true
                     }
                 })
