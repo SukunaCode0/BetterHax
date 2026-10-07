@@ -90,14 +90,22 @@ object MinecraftRelay {
                 this@MinecraftRelay.session.netSession = session
                 session.listeners.add(this@MinecraftRelay.session)
                 session.listeners.add(object : MinecraftRelayPacketListener {
+                    private fun pidOf(packet: BedrockPacket): Int {
+                        return try { packet.packetId } catch (_: Throwable) { -1 }
+                    }
+                    private fun hexOf(packet: BedrockPacket): String {
+                        return try {
+                            val m = packet.javaClass.methods.firstOrNull { it.name == "getPayload" && it.parameterCount == 0 } ?: return "?noPayload"
+                            val p = m.invoke(packet) ?: return "?null"
+                            if (p is ByteArray) p.take(128).joinToString("") { "%02x".format(it) } else "?type=" + p.javaClass.simpleName
+                        } catch (_: Throwable) { "?err" }
+                    }
                     override fun onPacketOutbound(packet: BedrockPacket): Boolean {
-                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
-                        logInfo("pk.out " + packet.javaClass.simpleName + ":" + pid)
+                        logInfo("pk.out " + packet.javaClass.simpleName + ":" + pidOf(packet) + " hex=" + hexOf(packet))
                         return true
                     }
                     override fun onPacketInbound(packet: BedrockPacket): Boolean {
-                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
-                        logInfo("pk.in " + packet.javaClass.simpleName + ":" + pid)
+                        logInfo("pk.in " + packet.javaClass.simpleName + ":" + pidOf(packet) + " hex=" + hexOf(packet))
                         return true
                     }
                 })
