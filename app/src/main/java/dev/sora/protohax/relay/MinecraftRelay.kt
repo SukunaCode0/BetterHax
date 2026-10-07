@@ -38,48 +38,64 @@ object MinecraftRelay {
     val session = GameSession()
     val moduleManager: ModuleManager
     val configManager: ConfigManagerFileSystem
-	val hudManager: HudManager
+    val hudManager: HudManager
 
-	val tokenCacheFile = File(MyApplication.instance.cacheDir, "token_cache.json")
+    val tokenCacheFile = File(MyApplication.instance.cacheDir, "token_cache.json")
 
-	var loaderThread: Thread? = null
+    var loaderThread: Thread? = null
 
     init {
         moduleManager = ModuleManager(session)
-		hudManager = HudManager(session)
+        hudManager = HudManager(session)
 
-		// load asynchronously
-		loaderThread = thread {
-			moduleManager.init()
-			registerAdditionalModules(moduleManager)
-			MyApplication.instance.getExternalFilesDir("resource_packs")?.also {
-				if (!it.exists()) it.mkdirs()
-				ModuleResourcePackSpoof.resourcePackProvider = ModuleResourcePackSpoof.FileSystemResourcePackProvider(it)
-			}
+        // load asynchronously
+        loaderThread = thread {
+            moduleManager.init()
+            registerAdditionalModules(moduleManager)
+            MyApplication.instance.getExternalFilesDir("resource_packs")?.also {
+                if (!it.exists()) it.mkdirs()
+                ModuleResourcePackSpoof.resourcePackProvider = ModuleResourcePackSpoof.FileSystemResourcePackProvider(it)
+            }
 
-			if (Settings.enableCommandManager.getValue(MyApplication.instance)) {
-				// command manager will register listener itself
-				val commandManager = CommandManager(session)
-				commandManager.init(moduleManager)
-				MyApplication.instance.getExternalFilesDir("downloaded_worlds")?.also {
-					commandManager.registerCommand(CommandDownloadWorld(session.eventManager, it))
-				}
-			}
+            if (Settings.enableCommandManager.getValue(MyApplication.instance)) {
+                // command manager will register listener itself
+                val commandManager = CommandManager(session)
+                commandManager.init(moduleManager)
+                MyApplication.instance.getExternalFilesDir("downloaded_worlds")?.also {
+                    commandManager.registerCommand(CommandDownloadWorld(session.eventManager, it))
+                }
+            }
 
-			// clean-up
-			loaderThread = null
-		}
+            // clean-up
+            loaderThread = null
+        }
 
         configManager = ConfigManagerFileSystem(MyApplication.instance.getExternalFilesDir("configs")!!, ".json").also {
-			it.addSection(ConfigSectionModule(moduleManager))
-			it.addSection(ConfigSectionShortcut(MyApplication.overlayManager))
-			it.addSection(hudManager)
-		}
+            it.addSection(ConfigSectionModule(moduleManager))
+            it.addSection(ConfigSectionShortcut(MyApplication.overlayManager))
+            it.addSection(hudManager)
+        }
     }
 
     private fun registerAdditionalModules(moduleManager: ModuleManager) {
-		moduleManager.registerModule(ModuleESP())
-	}
+        moduleManager.registerModule(ModuleESP())
+    }
+
+    private fun packetId(packet: BedrockPacket): Int {
+        return try {
+            val getter = packet.javaClass.methods.firstOrNull { method ->
+                method.name == "getPacketId" || method.name == "packetId"
+            }
+
+            when (val value = getter?.invoke(packet)) {
+                is Int -> value
+                is Number -> value.toInt()
+                else -> -1
+            }
+        } catch (_: Throwable) {
+            -1
+        }
+    }
 
     private fun constructRelay(): Relay {
         return Relay(object : MinecraftRelayListener {
@@ -91,30 +107,30 @@ object MinecraftRelay {
                 session.listeners.add(this@MinecraftRelay.session)
                 session.listeners.add(object : MinecraftRelayPacketListener {
                     override fun onPacketOutbound(packet: BedrockPacket): Boolean {
-                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
+                        val pid = packetId(packet)
                         logInfo("pk.out " + packet.javaClass.simpleName + ":" + pid)
                         return true
                     }
+
                     override fun onPacketInbound(packet: BedrockPacket): Boolean {
-                        val pid = try { packet.packetId } catch (_: Throwable) { -1 }
+                        val pid = packetId(packet)
                         logInfo("pk.in " + packet.javaClass.simpleName + ":" + pid)
                         return true
                     }
                 })
 
-
                 val sessionEncryptor = if (Settings.offlineSessionEncryption.getValue(MyApplication.instance) && AccountManager.currentAccount == null) {
-					RelayListenerEncryptedSession()
-				} else {
-					AccountManager.currentAccount?.let { account ->
-						logInfo("logged in as ${account.remark}")
-						RelayListenerXboxLogin({
-							account.refresh()
-						}, account.platform).also {
-							it.tokenCache = XboxIdentityTokenCacheFileSystem(tokenCacheFile, account.remark)
-						}
-					}
-				}
+                    RelayListenerEncryptedSession()
+                } else {
+                    AccountManager.currentAccount?.let { account ->
+                        logInfo("logged in as ${account.remark}")
+                        RelayListenerXboxLogin({
+                            account.refresh()
+                        }, account.platform).also {
+                            it.tokenCache = XboxIdentityTokenCacheFileSystem(tokenCacheFile, account.remark)
+                        }
+                    }
+                }
                 sessionEncryptor?.let {
                     it.session = session
                     session.listeners.add(it)
@@ -123,34 +139,34 @@ object MinecraftRelay {
                 // resolve original ip and pass to relay client
                 val address = session.peer.channel.config().getOption(NativeRakConfig.RAK_NATIVE_TARGET_ADDRESS)
                 logInfo("SessionCreation $address")
-				return address
+                return address
             }
         })
     }
 
-	fun updateReliability() {
-		relay?.optionReliability = if (Settings.enableRakReliability.getValue(MyApplication.instance))
-			RakReliability.RELIABLE_ORDERED else RakReliability.RELIABLE
-	}
+    fun updateReliability() {
+        relay?.optionReliability = if (Settings.enableRakReliability.getValue(MyApplication.instance))
+            RakReliability.RELIABLE_ORDERED else RakReliability.RELIABLE
+    }
 
-	fun announceRelayUp() {
-		if (relay == null) {
-			relay = constructRelay()
-			updateReliability()
-		}
-		loaderThread?.join()
-		if (!relay!!.isRunning) {
-			relay!!.bind(InetSocketAddress("0.0.0.0", 1337))
-			logInfo("relay started")
-		}
-	}
+    fun announceRelayUp() {
+        if (relay == null) {
+            relay = constructRelay()
+            updateReliability()
+        }
+        loaderThread?.join()
+        if (!relay!!.isRunning) {
+            relay!!.bind(InetSocketAddress("0.0.0.0", 1337))
+            logInfo("relay started")
+        }
+    }
 
-	class Relay(listener: MinecraftRelayListener) : dev.sora.relay.MinecraftRelay(listener) {
+    class Relay(listener: MinecraftRelayListener) : dev.sora.relay.MinecraftRelay(listener) {
 
-		override fun channelFactory(): ChannelFactory<out ServerChannel> {
-			return ChannelFactory {
-				NativeRakServerChannel()
-			}
-		}
-	}
+        override fun channelFactory(): ChannelFactory<out ServerChannel> {
+            return ChannelFactory {
+                NativeRakServerChannel()
+            }
+        }
+    }
 }
