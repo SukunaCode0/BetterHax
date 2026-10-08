@@ -81,11 +81,12 @@ object MinecraftRelay {
 		moduleManager.registerModule(ModuleESP())
 	}
 
-    private fun packetDescribe(packet: BedrockPacket): String {
+    private fun packetDescribe(session: MinecraftRelaySession, packet: BedrockPacket): String {
         return try {
             val name = packet.javaClass.simpleName
-            if (packet is org.cloudburstmc.protocol.bedrock.packet.UnknownPacket) {
-                try {
+            var detail = ""
+            try {
+                if (packet is org.cloudburstmc.protocol.bedrock.packet.UnknownPacket) {
                     val buf = packet.payload
                     val len = buf?.readableBytes() ?: -1
                     var hex = ""
@@ -96,13 +97,16 @@ object MinecraftRelay {
                         }
                     } catch (_: Throwable) {
                     }
-                    name + ":" + packet.packetId + " len=" + len + " hex=" + hex
-                } catch (_: Throwable) {
-                    name
+                    detail = ":" + packet.packetId + " len=" + len + " hex=" + hex
+                } else {
+                    val s = try { packet.toString() } catch (_: Throwable) { "" }
+                    detail = " " + (if (s.length > 160) s.substring(0, 160) else s)
                 }
-            } else {
-                name
+            } catch (_: Throwable) {
             }
+            val cp = try { session.codec.protocolVersion } catch (_: Throwable) { -99 }
+            val cc = try { session.client?.codec?.protocolVersion?.toString() ?: "noclient" } catch (_: Throwable) { "err" }
+            name + detail + " [c=" + cp + " sc=" + cc + "]"
         } catch (_: Throwable) {
             "packet"
         }
@@ -118,11 +122,11 @@ object MinecraftRelay {
                 session.listeners.add(this@MinecraftRelay.session)
                 session.listeners.add(object : MinecraftRelayPacketListener {
                     override fun onPacketOutbound(packet: BedrockPacket): Boolean {
-                        try { logInfo("pk.out " + packetDescribe(packet)) } catch (_: Throwable) { }
+                        try { logInfo("pk.out " + packetDescribe(session, packet)) } catch (_: Throwable) { }
                         return true
                     }
                     override fun onPacketInbound(packet: BedrockPacket): Boolean {
-                        try { logInfo("pk.in " + packetDescribe(packet)) } catch (_: Throwable) { }
+                        try { logInfo("pk.in " + packetDescribe(session, packet)) } catch (_: Throwable) { }
                         return true
                     }
                 })
