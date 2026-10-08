@@ -36,7 +36,7 @@ jobs:
           sed -i "s/dev.sora.relay:ProtoHax:1.4.0/dev.sora.relay:ProtoHax:1.5.0/" app/build.gradle
           sed -i "s|implementation 'dev.sora.networking:libmitm:1.2.3-raknet'|testImplementation 'junit:junit:4.13.2'|" app/build.gradle
           sed -i "/mccheatz.github.io/d" settings.gradle
-          grep -n "ProtoHax\|junit" app/build.gradle
+          grep -n "ProtoHax\\|junit" app/build.gradle
           grep -n "repositories" -A6 settings.gradle | head -n 20
 
       - name: Verify uploaded sources
