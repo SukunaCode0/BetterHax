@@ -81,12 +81,30 @@ object MinecraftRelay {
 		moduleManager.registerModule(ModuleESP())
 	}
 
-    private fun pidOf(packet: Any): Int {
+    private fun packetDescribe(packet: BedrockPacket): String {
         return try {
-            val m = packet.javaClass.methods.firstOrNull { it.name == "getPacketId" && it.parameterTypes.isEmpty() } ?: return -1
-            (m.invoke(packet) as? Number)?.toInt() ?: -1
+            val name = packet.javaClass.simpleName
+            if (packet is org.cloudburstmc.protocol.bedrock.packet.UnknownPacket) {
+                try {
+                    val buf = packet.payload
+                    val len = buf?.readableBytes() ?: -1
+                    var hex = ""
+                    try {
+                        if (buf != null && len > 0) {
+                            val n = if (len > 64) 64 else len
+                            hex = io.netty.buffer.ByteBufUtil.hexDump(buf, buf.readerIndex(), n)
+                        }
+                    } catch (_: Throwable) {
+                    }
+                    name + ":" + packet.packetId + " len=" + len + " hex=" + hex
+                } catch (_: Throwable) {
+                    name
+                }
+            } else {
+                name
+            }
         } catch (_: Throwable) {
-            -1
+            "packet"
         }
     }
 
@@ -100,11 +118,11 @@ object MinecraftRelay {
                 session.listeners.add(this@MinecraftRelay.session)
                 session.listeners.add(object : MinecraftRelayPacketListener {
                     override fun onPacketOutbound(packet: BedrockPacket): Boolean {
-                        logInfo("pk.out " + packet.javaClass.simpleName + ":" + pidOf(packet))
+                        try { logInfo("pk.out " + packetDescribe(packet)) } catch (_: Throwable) { }
                         return true
                     }
                     override fun onPacketInbound(packet: BedrockPacket): Boolean {
-                        logInfo("pk.in " + packet.javaClass.simpleName + ":" + pidOf(packet))
+                        try { logInfo("pk.in " + packetDescribe(packet)) } catch (_: Throwable) { }
                         return true
                     }
                 })
