@@ -292,6 +292,7 @@ class TunCore(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        try { logger?.invoke("tun.core v3") } catch (_: Throwable) { }
         spawn("reader") { readerLoop() }
         spawn("sweeper") { sweeperLoop() }
     }
