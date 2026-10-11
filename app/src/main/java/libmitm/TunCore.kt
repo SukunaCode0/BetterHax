@@ -236,6 +236,8 @@ class TunCore(
     private val gameOutBytes = AtomicLong(0)
     private val relayErrs = AtomicLong(0)
     private val writeErrs = AtomicLong(0)
+    private val feOut = AtomicLong(0)
+    private val feDrop = AtomicLong(0)
     @Volatile private var firstWriteErr: String? = null
     private val tcpHandshakes = AtomicLong(0)
     private val pingFwd = AtomicLong(0)
@@ -682,10 +684,17 @@ class TunCore(
                 val f = gameFlows[id]
                 if (f != null) {
                     f.lastSeen = System.currentTimeMillis()
+                    if (bytes.isNotEmpty() && (bytes[0].toInt() and 0xFF) == 0xFE) {
+                        val n = feOut.incrementAndGet()
+                        if (n <= 8) try { logger?.invoke("gout.fe len=" + bytes.size + " " + flowLabel(id)) } catch (_: Throwable) { }
+                    }
                     val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
                     gameOutPkts.incrementAndGet()
                     gameOutBytes.addAndGet(bytes.size.toLong())
                     writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+                } else {
+                    val n = feDrop.incrementAndGet()
+                    if (n <= 4) try { logger?.invoke("gout.drop len=" + bytes.size + " " + flowLabel(id)) } catch (_: Throwable) { }
                 }
             }
             conn.onWrite = { bytes ->
