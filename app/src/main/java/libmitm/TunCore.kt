@@ -236,6 +236,10 @@ class TunCore(
     private val gameOutBytes = AtomicLong(0)
     private val relayErrs = AtomicLong(0)
     private val writeErrs = AtomicLong(0)
+    private val feOut = AtomicLong(0)
+    private val feDrop = AtomicLong(0)
+    private val dgOut = AtomicLong(0)
+    private val onwOut = AtomicLong(0)
     @Volatile private var firstWriteErr: String? = null
     private val tcpHandshakes = AtomicLong(0)
     private val pingFwd = AtomicLong(0)
@@ -290,6 +294,7 @@ class TunCore(
 
     fun start() {
         if (!running.compareAndSet(false, true)) return
+        try { logger?.invoke("tun.core v4") } catch (_: Throwable) { }
         spawn("reader") { readerLoop() }
         spawn("sweeper") { sweeperLoop() }
     }
@@ -682,14 +687,49 @@ class TunCore(
                 val f = gameFlows[id]
                 if (f != null) {
                     f.lastSeen = System.currentTimeMillis()
+                    val dgN = dgOut.incrementAndGet()
+                    if (dgN <= 10) {
+                        var innerFe = false
+                        var innerFirst = -1
+                        var frameCount = 0
+                        try {
+                            if (bytes.size >= 4 && (bytes[0].toInt() and 0xF0) == 0x80) {
+                                var q = 4
+                                while (q + 6 < bytes.size && frameCount < 8) {
+                                    val fb = bytes[q].toInt() and 0xFF
+                                    val rel = fb ushr 5
+                                    val split = (fb and 0x10) != 0
+                                    var h = 1 + 2 + 3
+                                    if (rel == 1 || rel == 3 || rel == 4 || rel == 7) h += 4
+                                    if (split) h += 10
+                                    if (q + h >= bytes.size) break
+                                    val nb = ((bytes[q + 1].toInt() and 0xFF) shl 8) or (bytes[q + 2].toInt() and 0xFF)
+                                    val payLen = nb ushr 3
+                                    if (payLen <= 0 || q + h + payLen > bytes.size) break
+                                    if (frameCount == 0) innerFirst = bytes[q + h].toInt() and 0xFF
+                                    if ((bytes[q + h].toInt() and 0xFF) == 0xFE) innerFe = true
+                                    frameCount++
+                                    q += h + payLen
+                                }
+                            }
+                        } catch (_: Throwable) {
+                        }
+                        try { logger?.invoke("gout.dg n=" + dgN + " len=" + bytes.size + " frames=" + frameCount + " innerFe=" + innerFe + " inner=" + innerFirst) } catch (_: Throwable) { }
+                    }
                     val udp = buildUdp(dport, sport, bytes, dstCopy, srcCopy, v6)
                     gameOutPkts.incrementAndGet()
                     gameOutBytes.addAndGet(bytes.size.toLong())
                     writeTun(wrap(v6, dstCopy, srcCopy, IpProto.UDP, udp))
+                } else {
+                    val n = feDrop.incrementAndGet()
+                    if (n <= 4) try { logger?.invoke("gout.drop len=" + bytes.size + " " + flowLabel(id)) } catch (_: Throwable) { }
                 }
             }
+            sess?.olog = { s -> try { logger?.invoke(s) } catch (_: Throwable) { } }
             conn.onWrite = { bytes ->
                 try {
+                    val owN = onwOut.incrementAndGet()
+                    if (owN <= 6) try { logger?.invoke("relay.down len=" + bytes.size + " first=" + (bytes[0].toInt() and 0xFF)) } catch (_: Throwable) { }
                     sess?.sendConnected(bytes)
                 } catch (t: Throwable) {
                     val n = relayErrs.incrementAndGet()
