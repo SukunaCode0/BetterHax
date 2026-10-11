@@ -52,8 +52,10 @@ class RakServerSession(
     private val clientIp: ByteArray,
     private val clientPort: Int,
     private val sender: (ByteArray) -> Unit
-) {
+    ) {
     private val lock = Any()
+    private var scInN = 0L
+    private var scDropN = 0L
     private var offered = false
     private var closed = false
     private var sendSeq = 0
@@ -83,6 +85,7 @@ class RakServerSession(
 
     @Volatile
     var lastActivity = System.currentTimeMillis()
+    var olog: ((String) -> Unit)? = null
 
     fun handleIncoming(d: ByteArray) {
         if (d.isEmpty() || closed) return
@@ -425,6 +428,11 @@ class RakServerSession(
     }
 
     fun sendConnected(payload: ByteArray) {
+        try {
+            scInN++
+            if (scInN <= 6) olog?.invoke("sess.out n=" + scInN + " len=" + payload.size + " first=" + (payload[0].toInt() and 0xFF))
+        } catch (_: Throwable) {
+        }
         sendFrame(payload, true)
     }
 
@@ -435,7 +443,14 @@ class RakServerSession(
     private fun sendFrame(payload: ByteArray, ordered: Boolean) {
         if (payload.isEmpty()) return
         synchronized(lock) {
-            if (!offered || closed) return
+            if (!offered || closed) {
+                try {
+                    scDropN++
+                    if (scDropN <= 4) olog?.invoke("sess.drop offered=" + offered + " closed=" + closed)
+                } catch (_: Throwable) {
+                }
+                return
+            }
             val maxChunk = mtu - 128
             var offset = 0
             var frameSplitId = 0
