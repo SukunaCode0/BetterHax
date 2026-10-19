@@ -747,7 +747,7 @@ class TunCore(
             }
             flow = GameFlow(sess, System.currentTimeMillis(), id)
             gameFlows[id] = flow
-            try { val hx = payload.take(16).joinToString("") { "%02x".format(it) }; logger?.invoke("game.open " + flowLabel(id) + " src=" + id.srcIp + ":" + id.srcPort + " id=" + (payload[0].toInt() and 0xFF) + " hex=" + hx) } catch (_: Throwable) { }
+            try { val hx = payload.take(16).joinToString("") { "%02x".format(it) }; logger?.invoke("game.open " + flowLabel(id) + " src=" + id.srcIp + ":" + id.srcPort + " id=" + (payload[0].toInt() and 0xFF) + " hex=" + hx + " v6") } catch (_: Throwable) { }
         }
         flow.lastSeen = System.currentTimeMillis()
         try {
