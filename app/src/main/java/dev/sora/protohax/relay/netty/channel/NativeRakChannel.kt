@@ -18,6 +18,10 @@ import java.net.SocketAddress
 
 
 class NativeRakChannel(parent: Channel, private val rakConn: RakConn) : AbstractChannel(parent) {
+	companion object {
+		@Volatile var logHook: ((String) -> Unit)? = null
+	}
+	private var dwN = 0
 
 	private val metadata = ChannelMetadata(false)
 	private val config = NativeRakConfig(this).also {
@@ -113,13 +117,13 @@ class NativeRakChannel(parent: Channel, private val rakConn: RakConn) : Abstract
 			val msg = buf.current() ?: break
 
 			if (msg is ByteBuf) {
-				writeByteBuf(msg)
+				try { dwN++; if (dwN <= 12) logHook?.invoke("ch.out buf len=" + msg.readableBytes()) } catch (_: Throwable) { }; writeByteBuf(msg)
 				buf.remove()
 			} else if (msg is RakMessage) {
-				writeByteBuf(msg.content())
+				try { dwN++; if (dwN <= 12) logHook?.invoke("ch.out rak len=" + msg.content().readableBytes()) } catch (_: Throwable) { }; writeByteBuf(msg.content())
 				buf.remove()
 			} else {
-				buf.remove(UnsupportedOperationException("unsupported message type: " + StringUtil.simpleClassName(msg)))
+				try { logHook?.invoke("ch.out UNSUPPORTED " + msg.javaClass.name) } catch (_: Throwable) { }; buf.remove(UnsupportedOperationException("unsupported message type: " + StringUtil.simpleClassName(msg)))
 			}
 		}
 	}
