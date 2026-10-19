@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.random.Random
+import dev.sora.protohax.relay.netty.channel.NativeRakChannel
 
 internal object IpProto {
     const val UDP = 17
@@ -726,6 +727,7 @@ class TunCore(
                 }
             }
             sess?.olog = { s -> try { logger?.invoke(s) } catch (_: Throwable) { } }
+            try { NativeRakChannel.logHook = { s -> try { logger?.invoke(s) } catch (_: Throwable) { } } } catch (_: Throwable) { }
             conn.onWrite = { bytes ->
                 try {
                     val owN = onwOut.incrementAndGet()
