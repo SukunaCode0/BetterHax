@@ -66,6 +66,12 @@ jobs:
           set -o pipefail
           ./gradlew :app:testDebugUnitTest --no-daemon --stacktrace 2>&1 | tee /tmp/gradle-test.log
 
+      - name: Stamp per-run version
+        run: |
+          sed -i "s/versionCode 1$/versionCode $GITHUB_RUN_NUMBER/" app/build.gradle
+          sed -i "s/versionName '1.4.0'/versionName '1.5.0-b$GITHUB_RUN_NUMBER'/" app/build.gradle
+          grep -n "versionCode\\|versionName" app/build.gradle
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
@@ -75,7 +81,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ProtoHax-1.26.50-apk
+          name: ProtoHax-1.26.50-apk-b${{ github.run_number }}
           path: app/build/outputs/apk/debug/*.apk
 
       - name: Show error summary
