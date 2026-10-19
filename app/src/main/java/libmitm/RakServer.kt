@@ -170,7 +170,7 @@ class RakServerSession(
             if (!offered && !closed) {
                 offered = true
                 offeredAt = System.currentTimeMillis()
-                Libmitm.offer(conn)
+                try { olog?.invoke("offered") } catch (_: Throwable) { }; Libmitm.offer(conn)
             }
         }
     }
